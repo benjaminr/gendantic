@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gendantic"
+version = "0.1.0"
+description = "Generate synthetic data using Pydantic models and LLMs"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic[email]>=2.5.0",
+    "openai>=1.3.0",
+    "anthropic>=0.8.0",
+    "httpx>=0.24.0",
+    "python-dotenv>=1.1.1",
+    "asyncio>=4.0.0",
+    "aiohttp>=3.12.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.4.0",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "C4", "S"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17.1",
+    "pre-commit>=4.3.0",
+    "pytest>=8.4.1",
+    "ruff>=0.12.10",
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v --tb=short"

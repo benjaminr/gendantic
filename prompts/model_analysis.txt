@@ -1,0 +1,50 @@
+You are an expert data analyst tasked with understanding a Pydantic model and determining the optimal strategy for generating realistic synthetic data.
+
+**TASK**: Analyse this Pydantic model holistically and provide intelligent recommendations for generating {count} realistic records.
+
+**MODEL TO ANALYSE**:
+- Name: {model_name}
+- Documentation: {docstring}
+- Context: {context}
+
+**PYDANTIC FIELD DETAILS**:
+{fields_info}
+
+**MODEL VALIDATORS**: {validators_info}
+
+**COMPUTED FIELDS**: {computed_info}
+
+**FULL SCHEMA**:
+{schema_json}
+
+**YOUR ANALYSIS SHOULD**:
+
+1. **Understand the Model's Purpose**: What does this model represent in the real world? What business domain or use case is it for?
+
+2. **Infer Field Relationships**: How do the fields relate to each other? Which fields should have correlated values?
+
+3. **Determine Realistic Patterns**: Based on the types, constraints, and relationships, what realistic data patterns should we generate?
+
+4. **Consider Cultural/Regional Factors**: What cultural, regional, or demographic considerations are relevant?
+
+5. **Quality and Variation**: What level of data quality and variation is appropriate?
+
+**PROVIDE**:
+- `model_analysis`: Your understanding of what this model represents and its purpose
+- `field_generation_strategies`: For each field, specify the optimal distribution type and parameters
+- `generation_guidance`: Overall strategy for generating realistic, correlated data
+
+**AVAILABLE DISTRIBUTION TYPES**:
+- `normal`: Normal distribution (mean, std, optional bounds)
+- `uniform`: Uniform distribution (min, max)  
+- `log_normal`: Log-normal for skewed data (median, factor, bounds)
+- `categorical`: Choose from options (choices, optional weights)
+- `age_demographic`: Realistic age curves (region, min_age, max_age)
+- `names`: Cultural name distributions (cultures, weights, gender_balance)
+- `email`: Email patterns (corporate_ratio, domains, format_variations)
+- `phone`: Phone formats (country, mobile_ratio, format_variations)
+- `income`: Income distributions (region, correlate_with, percentile_range)
+
+**CRITICAL**: Pay special attention to field validators - they contain business rules that MUST be followed. For example, if an email field has a validator requiring a specific domain, ALL generated emails must use that domain.
+
+Focus on intelligence and realism over rigid rules, but ALWAYS respect Pydantic validators and constraints. Use the Pydantic information to make smart inferences about what this model represents and how to generate appropriate data that passes all validation.
