@@ -1,98 +1,238 @@
+"""
+Gendantic Example - Intelligent Synthetic Data Generation
+
+This example demonstrates:
+1. Statistical distributions with Annotated types
+2. LLM-generated semantic fields
+3. Dynamic model generation from descriptions
+4. Reproducibility with seeds
+5. Context-aware generation
+"""
+
 import asyncio
-from datetime import datetime
-from enum import Enum
-from typing import Optional
+from typing import Annotated, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, Field
 
-from gendantic import generate, generate_batch
+from gendantic import (
+    Beta,
+    Categorical,
+    LogNormal,
+    Normal,
+    Poisson,
+    Uniform,
+    generate_synthetic_data,
+    generate_synthetic_data_batch,
+    generate_model_from_description,
+)
 
 
-class Department(str, Enum):
-    """Employee department options."""
-    ENGINEERING = "engineering"
-    PRODUCT = "product" 
-    MARKETING = "marketing"
-    SALES = "sales"
-
-
+# Example 1: Model with statistical distributions
 class Employee(BaseModel):
-    """Employee at a modern company."""
-    
+    """Employee with mixed distribution-sampled and LLM-generated fields."""
+
+    # LLM-generated fields (semantic content)
     first_name: str = Field(min_length=2, max_length=30)
     last_name: str = Field(min_length=2, max_length=30)
-    email: EmailStr = Field(description="Work email address")
-    department: Department
     job_title: str
-    salary: int = Field(ge=30000, le=200000, description="Annual salary in GBP")
-    years_experience: int = Field(ge=0, le=40)
-    is_manager: bool = False
-    start_date: datetime
-    performance_rating: Optional[float] = Field(ge=1.0, le=5.0, default=None)
-    
-    @field_validator("email")
-    @classmethod
-    def email_must_be_company_domain(cls, v):
-        """Work emails must use company domain."""
-        if not v.endswith("@mycompany.com"):
-            raise ValueError("Work email must use @mycompany.com domain")
-        return v
+    bio: str = Field(description="Brief professional bio")
+
+    # Distribution-sampled fields (statistical guarantees)
+    age: Annotated[int, Uniform(min=22, max=65)]
+    salary: Annotated[float, Normal(mean=75000, std=20000)] = Field(ge=30000)
+    years_experience: Annotated[int, Uniform(min=0, max=40)]
+    department: Annotated[
+        str,
+        Categorical(
+            weights={
+                "Engineering": 0.35,
+                "Product": 0.20,
+                "Sales": 0.20,
+                "Marketing": 0.15,
+                "HR": 0.10,
+            }
+        ),
+    ]
+    performance_rating: Annotated[float, Beta(alpha=5, beta=2)] = Field(
+        ge=0.0, le=1.0, description="Performance score 0-1"
+    )
+
+
+# Example 2: Sales data with various distributions
+class SalesRecord(BaseModel):
+    """Sales record demonstrating different distribution types."""
+
+    # LLM generates realistic content
+    customer_name: str
+    product_name: str
+    notes: Optional[str] = None
+
+    # Numpy samples from distributions
+    deal_value: Annotated[float, LogNormal(mean=9, sigma=1.5)]  # Right-skewed
+    units_sold: Annotated[int, Poisson(lam=5)]  # Count data
+    discount_pct: Annotated[float, Beta(alpha=2, beta=8)]  # Mostly low discounts
+    region: Annotated[
+        str,
+        Categorical(weights={"North": 0.3, "South": 0.25, "East": 0.25, "West": 0.2}),
+    ]
+
+
+async def demo_distributions():
+    """Demonstrate statistical distribution sampling."""
+    print("=" * 60)
+    print("1. Statistical Distributions")
+    print("=" * 60)
+    print("\nGenerating 5 employees with distribution-sampled fields...")
+    print("(salary: Normal, age: Uniform, department: Categorical)\n")
+
+    employees = await generate_synthetic_data(Employee, count=5, seed=42)
+
+    for emp in employees:
+        print(f"{emp.first_name} {emp.last_name}")
+        print(f"  {emp.job_title} | {emp.department}")
+        print(f"  Age: {emp.age} | Experience: {emp.years_experience}y")
+        print(f"  Salary: £{emp.salary:,.0f} | Rating: {emp.performance_rating:.2f}")
+        print(f"  Bio: {emp.bio[:60]}...")
+        print()
+
+
+async def demo_reproducibility():
+    """Demonstrate reproducible generation with seeds."""
+    print("=" * 60)
+    print("2. Reproducibility with Seeds")
+    print("=" * 60)
+    print("\nGenerating with seed=123 twice - distribution fields match:\n")
+
+    batch1 = await generate_synthetic_data(Employee, count=3, seed=123)
+    batch2 = await generate_synthetic_data(Employee, count=3, seed=123)
+
+    for i, (e1, e2) in enumerate(zip(batch1, batch2, strict=False)):
+        print(f"Record {i + 1}:")
+        print(
+            f"  Batch 1: age={e1.age}, salary=£{e1.salary:,.0f}, dept={e1.department}"
+        )
+        print(
+            f"  Batch 2: age={e2.age}, salary=£{e2.salary:,.0f}, dept={e2.department}"
+        )
+        match = (
+            e1.age == e2.age
+            and e1.salary == e2.salary
+            and e1.department == e2.department
+        )
+        print(f"  Match: {'Yes' if match else 'No'}")
+        print()
+
+
+async def demo_dynamic_model():
+    """Demonstrate dynamic model generation from descriptions."""
+    print("=" * 60)
+    print("3. Dynamic Model Generation")
+    print("=" * 60)
+    print("\nGenerating a model from natural language description...\n")
+
+    description = """
+    A customer support ticket with:
+    - Priority level (high, medium, low with realistic proportions)
+    - Category (billing, technical, general inquiry)
+    - Customer satisfaction score (0-10)
+    - Resolution time in hours
+    - A description of the issue
+    """
+
+    Model, source_code = await generate_model_from_description(description, model_name="SupportTicket")
+
+    print("Generated model code:")
+    print("-" * 40)
+    print(source_code)
+    print("-" * 40)
+
+    print("\nGenerating 3 tickets using the model:\n")
+    tickets = await generate_synthetic_data(Model, count=3)
+
+    for i, ticket in enumerate(tickets, 1):
+        print(f"Ticket {i}:")
+        for field_name in Model.model_fields:
+            value = getattr(ticket, field_name)
+            if isinstance(value, float):
+                print(f"  {field_name}: {value:.2f}")
+            else:
+                value_str = (
+                    str(value)[:50] + "..." if len(str(value)) > 50 else str(value)
+                )
+                print(f"  {field_name}: {value_str}")
+        print()
+
+
+async def demo_context_aware():
+    """Demonstrate context-aware generation."""
+    print("=" * 60)
+    print("4. Context-Aware Generation")
+    print("=" * 60)
+    print("\nSame model, different contexts produce different realistic data:\n")
+
+    contexts = [
+        "Silicon Valley AI startup",
+        "Traditional London investment bank",
+    ]
+
+    for context in contexts:
+        print(f"Context: {context}")
+        print("-" * 40)
+
+        employees = await generate_synthetic_data(Employee, count=2, context=context)
+
+        for emp in employees:
+            print(f"  {emp.first_name} {emp.last_name} - {emp.job_title}")
+            print(f"  £{emp.salary:,.0f} | {emp.department}")
+        print()
+
+
+async def demo_batch_generation():
+    """Demonstrate batch generation across contexts."""
+    print("=" * 60)
+    print("5. Batch Generation")
+    print("=" * 60)
+    print("\nGenerating employees for multiple offices concurrently:\n")
+
+    contexts = [
+        "New York headquarters",
+        "London office",
+        "Tokyo branch",
+    ]
+
+    batches = await generate_synthetic_data_batch(Employee, contexts, count=2, seed=42)
+
+    for context, employees in zip(contexts, batches, strict=False):
+        print(f"{context}:")
+        for emp in employees:
+            print(
+                f"  {emp.first_name} {emp.last_name} - {emp.job_title} (£{emp.salary:,.0f})"
+            )
+        print()
 
 
 async def main():
-    """Demonstrate Gendantic's intelligent synthetic data generation."""
-    
-    print("🚀 Gendantic - LLM-Driven Synthetic Data Generation")
+    """Run all demonstrations."""
+    print("\nGendantic - Intelligent Synthetic Data Generation")
     print("=" * 60)
-    
+    print()
+
     try:
-        # 1. Basic generation - LLM automatically analyses the model
-        print("\nBasic Generation")
-        print("The LLM automatically analyses your Pydantic model:")
-        
-        basic_employees = await generate(Employee, count=3)
-        
-        print(f"Generated {len(basic_employees)} employees")
-        for emp in basic_employees:
-            print(f"  • {emp.first_name} {emp.last_name} - {emp.job_title}")
-            print(f"    {emp.email} | {emp.department.value.title()}")
-            print(f"    £{emp.salary:,} | {emp.years_experience}y experience")
-            print()
-        
-        # 2. Context-aware generation - much more realistic
-        print("Context-Aware Generation")
-        print("Provide business context for more realistic data:")
-        
-        fintech_employees = await generate(
-            Employee, 
-            count=3, 
-            context="Fast-growing London fintech startup with diverse international team"
-        )
-        
-        print("London fintech startup employees:")
-        for emp in fintech_employees:
-            print(f"  • {emp.first_name} {emp.last_name} - {emp.job_title}")
-            print(f"    {emp.email} | {emp.department.value.title()}")
-            print(f"    £{emp.salary:,} | Rating: {emp.performance_rating or 'N/A'}/5")
-            print()
-        
-        # 3. Demonstrate async generation
-        print("Async Generation")
-        print("Generate data asynchronously:")
-        
-        async_employees = await generate(Employee, count=2, context="Modern UK startup")
-        
-        print("Async generated employees:")
-        for emp in async_employees:
-            print(f"  • {emp.first_name} {emp.last_name} - {emp.job_title}")
-            print(f"    {emp.email} | £{emp.salary:,}")
-            print()
-        
+        await demo_distributions()
+        await demo_reproducibility()
+        await demo_dynamic_model()
+        await demo_context_aware()
+        await demo_batch_generation()
+
+        print("=" * 60)
+        print("All demonstrations complete!")
+        print("=" * 60)
+
     except ValueError as e:
-        print(f"Error: {e}")
+        print(f"\nError: {e}")
         print("\nTo run this example, set either:")
-        print("- OPENAI_API_KEY environment variable")
-        print("- ANTHROPIC_API_KEY environment variable")
+        print("  export OPENAI_API_KEY='your-key'")
+        print("  export ANTHROPIC_API_KEY='your-key'")
 
 
 if __name__ == "__main__":
