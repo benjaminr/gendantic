@@ -3,7 +3,7 @@ from pathlib import Path
 
 def load_prompt(prompt_name: str) -> str:
     """Load a prompt template from a text file."""
-    prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+    prompts_dir = Path(__file__).parent / "prompts"
     prompt_file = prompts_dir / f"{prompt_name}.txt"
 
     if not prompt_file.exists():
