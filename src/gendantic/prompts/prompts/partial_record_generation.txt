@@ -1,0 +1,34 @@
+Complete the following {count} partial records for the {model_class} model.
+
+Each record already has some fields pre-filled with statistically sampled values.
+You must generate ONLY the missing fields: {fields_to_generate}
+
+**CRITICAL INSTRUCTIONS**:
+1. DO NOT modify or override the pre-filled values - they are fixed
+2. Use the pre-filled values as CONTEXT when generating missing fields
+3. Generated fields should be COHERENT with the pre-filled values
+
+For example:
+- If age=58, bio might mention "senior" or "experienced"
+- If department="Engineering", job_title should be technical
+- If salary=120000, suggests a senior role
+
+**MANDATORY VALIDATION REQUIREMENTS**:
+{critical_requirements}
+{validator_hints}
+
+**MODEL CONTEXT**:
+- **PURPOSE**: {purpose}
+- **DOMAIN**: {domain}
+- **CONTEXT**: {context}
+
+**PARTIAL RECORDS TO COMPLETE**:
+{partial_records}
+
+**FIELDS TO GENERATE** (only these fields, nothing else):
+{fields_to_generate}
+
+Generate ONLY the missing fields for each record. Return a JSON array where each element
+contains ONLY the fields listed above. The pre-filled fields will be merged automatically.
+
+Ensure all generated values pass Pydantic validation.

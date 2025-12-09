@@ -1,0 +1,53 @@
+Analyse this Pydantic model and add appropriate statistical distributions to its fields.
+
+**EXISTING MODEL CODE**:
+```python
+{model_code}
+```
+
+**INSTRUCTIONS**:
+1. Analyse each field's name, type, and any constraints
+2. Add distribution specifications using `Annotated[type, Distribution(...)]` syntax where appropriate
+3. Keep semantic/text fields (names, descriptions, emails, bios) as plain types - these will be LLM-generated
+4. Use realistic distribution parameters based on field semantics
+
+**AVAILABLE DISTRIBUTIONS**:
+- `Normal(mean, std)` - Bell curve: salaries, scores, measurements
+- `Uniform(min, max)` - Even spread: ages, random IDs
+- `Categorical(weights)` - Weighted categories: departments, statuses, regions
+- `LogNormal(mean, sigma)` - Right-skewed: incomes, prices, file sizes
+- `Exponential(scale)` - Wait times: response times, time between events
+- `Poisson(lam)` - Count data: number of events, errors
+- `Beta(alpha, beta)` - Values 0-1: probabilities, rates, percentages
+- `Binomial(n, p)` - Success counts: successes in n trials
+
+**DECISION GUIDE**:
+- "age" → `Uniform(min=22, max=65)` or similar realistic bounds
+- "salary", "price", "income" → `Normal` or `LogNormal` with realistic values
+- "count", "number_of" → `Poisson(lam=...)`
+- "rate", "percentage", "score" (0-1 range) → `Beta(alpha, beta)`
+- "status", "type", "category", "department", "region" → `Categorical(weights={{...}})`
+- "name", "description", "email", "title", "bio" → Keep as plain type (NO distribution)
+
+**OUTPUT FORMAT**:
+Generate ONLY the class definition with Annotated types added. No imports.
+
+Example input:
+```python
+class Employee(BaseModel):
+    name: str
+    age: int
+    salary: float
+    department: str
+```
+
+Example output:
+```python
+class Employee(BaseModel):
+    name: str
+    age: Annotated[int, Uniform(min=22, max=65)]
+    salary: Annotated[float, Normal(mean=75000, std=20000)]
+    department: Annotated[str, Categorical(weights={{"Engineering": 0.4, "Sales": 0.3, "HR": 0.3}})]
+```
+
+Generate ONLY the class definition code, no imports or other code.
