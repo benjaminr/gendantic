@@ -396,6 +396,18 @@ LLM call is made) lives in [`examples/relational_quickstart.py`](examples/relati
 uv run python examples/relational_quickstart.py
 ```
 
+For a version that actually calls an LLM for the semantic fields (customer
+names, product names, review text) while keeping referential integrity, see
+[`examples/relational_llm.py`](examples/relational_llm.py). It needs a LiteLLM
+proxy — set the standard environment variables first:
+
+```bash
+export LITELLM_API_BASE="https://your-litellm-proxy/v1"
+export LITELLM_API_KEY="your-proxy-key"   # if the proxy requires auth
+export LITELLM_MODEL="openai/gpt-4o-mini"
+uv run python examples/relational_llm.py
+```
+
 ## Configuration
 
 Gendantic uses [LiteLLM](https://docs.litellm.ai/) to connect to a LiteLLM proxy, which provides unified access to multiple LLM providers.

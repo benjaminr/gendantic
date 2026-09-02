@@ -208,6 +208,42 @@ async def test_sync_wrapper_rejects_running_loop() -> None:
         generate_synthetic_data_sync(Employee, count=1)
 
 
+def test_make_schema_strict_enforces_strict_rules() -> None:
+    """Every object level gets additionalProperties:false and full required."""
+    from gendantic.llm import _make_schema_strict
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "address": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+            },
+            "tags": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"label": {"type": "string"}},
+                },
+            },
+        },
+    }
+    strict = _make_schema_strict(schema)
+
+    assert strict["additionalProperties"] is False
+    assert sorted(strict["required"]) == ["address", "name", "tags"]
+    # Nested object inside a property.
+    assert strict["properties"]["address"]["additionalProperties"] is False
+    assert strict["properties"]["address"]["required"] == ["city"]
+    # Nested object inside an array's items.
+    item = strict["properties"]["tags"]["items"]
+    assert item["additionalProperties"] is False
+    assert item["required"] == ["label"]
+    # Original schema is not mutated.
+    assert "additionalProperties" not in schema
+
+
 @pytest.mark.asyncio
 async def test_generate_model_from_description_mocked() -> None:
     """The dynamic model generator builds a working model from LLM code."""

@@ -14,6 +14,26 @@ from .prompts import load_prompt
 load_dotenv()
 
 
+def _make_schema_strict(schema: Any) -> Any:
+    """Recursively enforce OpenAI/Azure strict structured-output rules.
+
+    Strict mode (used by Azure-routed OpenAI models) requires every object to
+    set ``additionalProperties: false`` and to list *all* of its properties in
+    ``required``. This walks the schema — including nested objects, array items,
+    ``$defs`` and the ``anyOf``/``allOf``/``oneOf`` combinators — and applies
+    those rules so a plain Pydantic JSON schema is accepted by strict endpoints.
+    """
+    if isinstance(schema, dict):
+        result = {k: _make_schema_strict(v) for k, v in schema.items()}
+        if result.get("type") == "object" and "properties" in result:
+            result["additionalProperties"] = False
+            result["required"] = list(result["properties"].keys())
+        return result
+    if isinstance(schema, list):
+        return [_make_schema_strict(item) for item in schema]
+    return schema
+
+
 class LiteLLMClient:
     """LiteLLM client for calling models through a LiteLLM proxy.
 
@@ -50,7 +70,7 @@ class LiteLLMClient:
         try:
             # Build a wrapper schema that ensures we get {"items": [...]}
             # The input schema is expected to be {"type": "array", "items": {...}}
-            item_schema = schema.get("items", schema)
+            item_schema = _make_schema_strict(schema.get("items", schema))
 
             wrapped_schema = {
                 "type": "json_schema",
