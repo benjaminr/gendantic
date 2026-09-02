@@ -21,10 +21,12 @@ Usage:
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy import stats
 
 
@@ -32,7 +34,7 @@ class DistributionSpec(ABC):
     """Base class for statistical distribution specifications."""
 
     @abstractmethod
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         """
         Sample values from this distribution.
 
@@ -46,7 +48,7 @@ class DistributionSpec(ABC):
         pass
 
     @abstractmethod
-    def quantile(self, u: np.ndarray) -> np.ndarray:
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         """
         Compute the quantile function (inverse CDF).
 
@@ -88,11 +90,11 @@ class Normal(DistributionSpec):
     mean: float
     std: float
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.normal(self.mean, self.std, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
-        return stats.norm.ppf(u, loc=self.mean, scale=self.std)
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.norm.ppf(u, loc=self.mean, scale=self.std))
 
     @property
     def distribution_type(self) -> str:
@@ -117,10 +119,10 @@ class Uniform(DistributionSpec):
     min: float
     max: float
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.uniform(self.min, self.max, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return self.min + (self.max - self.min) * u
 
     @property
@@ -133,8 +135,10 @@ class Categorical(DistributionSpec):
     """
     Categorical distribution with specified proportions.
 
-    Note: Categorical fields cannot participate in correlation structures.
-    They are sampled independently.
+    Note: Categorical fields do not participate in correlation structures;
+    they are always sampled independently (see ``supports_correlation``).
+    A correlation spec that references a categorical field is ignored with a
+    warning.
 
     Args:
         weights: Dict mapping categories to their probabilities.
@@ -155,12 +159,12 @@ class Categorical(DistributionSpec):
                 f"Weights: {self.weights}"
             )
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         categories = list(self.weights.keys())
         probabilities = list(self.weights.values())
         return rng.choice(categories, size=count, p=probabilities)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         # For categorical, we use the inverse CDF approach
         categories = list(self.weights.keys())
         probabilities = list(self.weights.values())
@@ -175,8 +179,10 @@ class Categorical(DistributionSpec):
 
     @property
     def supports_correlation(self) -> bool:
-        # Categorical can be correlated via the copula approach
-        return True
+        # Unordered categories have no well-defined correlation (any induced
+        # dependency would hinge on arbitrary key order), so categorical fields
+        # are always sampled independently, even inside a correlation structure.
+        return False
 
 
 @dataclass(frozen=True)
@@ -202,11 +208,11 @@ class LogNormal(DistributionSpec):
     mean: float  # mu parameter (mean of log)
     sigma: float  # sigma parameter (std of log)
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.lognormal(self.mean, self.sigma, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
-        return stats.lognorm.ppf(u, s=self.sigma, scale=np.exp(self.mean))
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.lognorm.ppf(u, s=self.sigma, scale=np.exp(self.mean)))
 
     @property
     def distribution_type(self) -> str:
@@ -227,11 +233,11 @@ class Exponential(DistributionSpec):
 
     scale: float  # 1/lambda, equals the mean
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.exponential(self.scale, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
-        return stats.expon.ppf(u, scale=self.scale)
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.expon.ppf(u, scale=self.scale))
 
     @property
     def distribution_type(self) -> str:
@@ -255,11 +261,11 @@ class Poisson(DistributionSpec):
 
     lam: float  # lambda parameter (expected count)
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.poisson(self.lam, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
-        return stats.poisson.ppf(u, mu=self.lam)
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.poisson.ppf(u, mu=self.lam))
 
     @property
     def distribution_type(self) -> str:
@@ -290,11 +296,11 @@ class Beta(DistributionSpec):
     alpha: float
     beta: float
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.beta(self.alpha, self.beta, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
-        return stats.beta.ppf(u, self.alpha, self.beta)
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.beta.ppf(u, self.alpha, self.beta))
 
     @property
     def distribution_type(self) -> str:
@@ -317,11 +323,11 @@ class Binomial(DistributionSpec):
     n: int
     p: float
 
-    def sample(self, count: int, rng: np.random.Generator) -> np.ndarray:
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         return rng.binomial(self.n, self.p, count)
 
-    def quantile(self, u: np.ndarray) -> np.ndarray:
-        return stats.binom.ppf(u, self.n, self.p)
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.binom.ppf(u, self.n, self.p))
 
     @property
     def distribution_type(self) -> str:
@@ -431,7 +437,7 @@ class Correlations:
 
             self._specs.append((field1, field2, corr, copula))
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[tuple[str, str, float, str]]:
         return iter(self._specs)
 
     def __len__(self) -> int:
@@ -469,7 +475,7 @@ class Correlations:
             groups[copula].append((f1, f2, corr))
         return groups
 
-    def build_correlation_matrix(self, field_order: list[str]) -> np.ndarray:
+    def build_correlation_matrix(self, field_order: list[str]) -> NDArray[Any]:
         """
         Build a correlation matrix for the given field order.
 

@@ -6,7 +6,33 @@ build-backend = "setuptools.build_meta"
 name = "gendantic"
 version = "0.1.0"
 description = "Generate synthetic data using Pydantic models and LLMs"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Benjamin Rowell", email = "ben.rowell@ai.gov.uk" }]
+keywords = [
+    "synthetic-data",
+    "pydantic",
+    "llm",
+    "statistics",
+    "distributions",
+    "copula",
+    "data-generation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic[email]>=2.5.0",
     "litellm>=1.40.0",
@@ -16,9 +42,15 @@ dependencies = [
     "scipy>=1.10.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/benjaminr/gendantic"
+Repository = "https://github.com/benjaminr/gendantic"
+Issues = "https://github.com/benjaminr/gendantic/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
+    "pytest-asyncio>=0.24.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
     "pre-commit>=3.4.0",
@@ -35,6 +67,7 @@ gendantic = ["prompts/*.txt"]
 [tool.ruff]
 target-version = "py310"
 line-length = 88
+extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "B", "C4", "S"]

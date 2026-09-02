@@ -471,7 +471,10 @@ class TestCorrelations:
         assert hasattr(Employee, "__correlations__")
         assert isinstance(Employee.__correlations__, Correlations)
         # get_correlation returns (correlation, copula_type) tuple
-        assert Employee.__correlations__.get_correlation("age", "salary") == (0.5, "gaussian")
+        assert Employee.__correlations__.get_correlation("age", "salary") == (
+            0.5,
+            "gaussian",
+        )
 
     def test_reproducibility_with_correlations(self):
         """Test that correlated sampling is reproducible with seeds."""
@@ -508,7 +511,7 @@ class TestCopulaTypes:
 
     def test_correlations_with_copula_type(self):
         """Test creating correlations with explicit copula types."""
-        from gendantic import Correlations, CopulaType
+        from gendantic import Correlations
 
         corr = Correlations(
             ("age", "salary", 0.5),  # Default gaussian

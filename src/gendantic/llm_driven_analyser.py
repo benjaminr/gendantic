@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Annotated, Any, get_args, get_origin
 
 from pydantic import BaseModel
@@ -7,6 +8,8 @@ from pydantic.fields import FieldInfo
 from .distributions import DistributionSpec
 from .llm import get_client
 from .prompts import load_prompt
+
+logger = logging.getLogger("gendantic")
 
 
 class LLMDrivenModelAnalyser:
@@ -104,7 +107,7 @@ class LLMDrivenModelAnalyser:
         return specs
 
     @classmethod
-    def analyse_model_for_generation(
+    async def analyse_model_for_generation(
         cls,
         model_class: type[BaseModel],
         context: str = "general",
@@ -114,13 +117,16 @@ class LLMDrivenModelAnalyser:
         Use LLM to analyse Pydantic model and determine optimal generation strategy.
 
         This method extracts pure Pydantic metadata and lets the LLM interpret it
-        intelligently rather than using hardcoded rules.
+        intelligently rather than using hardcoded rules. If the LLM call fails,
+        a deterministic fallback analysis is returned.
         """
         # Extract pure technical Pydantic information
         pydantic_info = cls._extract_pure_pydantic_info(model_class)
 
         # Let LLM analyse and interpret
-        analysis = cls._get_llm_analysis(model_class, pydantic_info, context, count)
+        analysis = await cls._get_llm_analysis(
+            model_class, pydantic_info, context, count
+        )
 
         return analysis
 
@@ -134,7 +140,7 @@ class LLMDrivenModelAnalyser:
         fields = model_class.model_fields
 
         # Get model-level information
-        model_info = {
+        model_info: dict[str, Any] = {
             "model_name": model_class.__name__,
             "model_docstring": model_class.__doc__,
             "model_config": getattr(model_class, "model_config", {}),
@@ -216,7 +222,7 @@ class LLMDrivenModelAnalyser:
     @classmethod
     def _extract_field_metadata_raw(cls, field_info: FieldInfo) -> dict[str, Any]:
         """Extract raw field metadata."""
-        metadata = {}
+        metadata: dict[str, Any] = {}
 
         if hasattr(field_info, "json_schema_extra"):
             metadata["json_schema_extra"] = field_info.json_schema_extra
@@ -291,62 +297,78 @@ class LLMDrivenModelAnalyser:
 
         return computed
 
+    # JSON schema for the structured analysis response. Kept strict-mode
+    # compatible (every object closes additionalProperties and lists all
+    # required keys) so it works with providers that enforce strict schemas.
+    _ANALYSIS_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "model_analysis": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string"},
+                    "domain": {"type": "string"},
+                    "use_case": {"type": "string"},
+                    "data_patterns": {"type": "string"},
+                },
+                "required": ["purpose", "domain", "use_case", "data_patterns"],
+                "additionalProperties": False,
+            },
+            "generation_guidance": {
+                "type": "object",
+                "properties": {
+                    "overall_strategy": {"type": "string"},
+                    "field_relationships": {"type": "string"},
+                    "data_quality_approach": {"type": "string"},
+                    "cultural_considerations": {"type": "string"},
+                },
+                "required": [
+                    "overall_strategy",
+                    "field_relationships",
+                    "data_quality_approach",
+                    "cultural_considerations",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["model_analysis", "generation_guidance"],
+        "additionalProperties": False,
+    }
+
     @classmethod
-    def _get_llm_analysis(
+    async def _get_llm_analysis(
         cls,
         model_class: type[BaseModel],
         pydantic_info: dict[str, Any],
         context: str,
         count: int,
     ) -> dict[str, Any]:
-        """Get comprehensive LLM analysis of the model."""
+        """Get comprehensive LLM analysis of the model.
 
+        Routes through the shared LiteLLM client's structured-output path
+        (honouring LITELLM_MODEL). Falls back to a deterministic analysis if
+        the LLM call fails or returns an unexpected shape.
+        """
         client = get_client()
 
         # Build comprehensive prompt with pure Pydantic data
         prompt = cls._build_analysis_prompt(model_class, pydantic_info, context, count)
 
         try:
-            # For analysis, we don't want structured generation of model data
-            # Instead, let's use a simple JSON request for analysis
-            if hasattr(client, "client") and hasattr(client.client, "chat"):
-                # OpenAI client
-                import json
-
-                response = client.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a data modelling expert. Respond only with valid JSON matching the requested analysis format.",
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                            + "\n\nRespond with JSON containing model_analysis, field_generation_strategies, and generation_guidance objects.",
-                        },
-                    ],
-                )
-                content = response.choices[0].message.content or "{}"
-                result = json.loads(content)
-                if isinstance(result, dict) and any(
-                    key in result
-                    for key in [
-                        "model_analysis",
-                        "field_generation_strategies",
-                        "generation_guidance",
-                    ]
-                ):
-                    return result
-                else:
-                    return cls._fallback_analysis(model_class)
-            else:
-                # Anthropic fallback
-                return cls._fallback_analysis(model_class)
-
+            results = await client.generate_structured(
+                schema={"type": "array", "items": cls._ANALYSIS_SCHEMA},
+                prompt=prompt,
+                count=1,
+            )
+            if (
+                results
+                and isinstance(results[0], dict)
+                and "model_analysis" in results[0]
+            ):
+                return results[0]
+            return cls._fallback_analysis(model_class)
         except Exception as e:
-            print(f"LLM analysis failed: {e}")
+            logger.warning("LLM model analysis failed, using fallback: %s", e)
             return cls._fallback_analysis(model_class)
 
     @classmethod
