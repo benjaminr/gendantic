@@ -549,6 +549,7 @@ The `notebooks/` directory contains interactive tutorials:
 3. **03_correlations.ipynb** - Correlated fields and copula types
 4. **04_dynamic_models.ipynb** - Generating models from descriptions
 5. **05_model_extension.ipynb** - Extending models with distributions and correlations
+6. **06_relational.ipynb** - Multi-model datasets with primary/foreign keys and referential integrity
 
 Install notebook dependencies:
 ```bash
