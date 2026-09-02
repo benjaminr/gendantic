@@ -9,15 +9,18 @@ You must generate ONLY the missing fields: {fields_to_generate}
 3. Generated fields should be COHERENT with the pre-filled values
 4. If a record includes a "related_records" object, it describes the actual rows
    this record's foreign keys point at (e.g. the referenced product or customer).
-   Generated text MUST be coherent with those related rows and refer to them
-   specifically. "related_records" is context only - never output it as a field.
+   Use it so generated text is plausible for those related rows, but write
+   naturally - real text rarely quotes names verbatim. Prefer loose, varied
+   references (or none at all) over repeating the exact name and capitalisation.
+   "related_records" is context only - never output it as a field.
 
 For example:
 - If age=58, bio might mention "senior" or "experienced"
 - If department="Engineering", job_title should be technical
 - If salary=120000, suggests a senior role
-- If related_records.product.name="Bamboo Cutting Board Set", a review comment
-  should talk about that cutting board - not some unrelated item
+- If related_records.product.name="Bamboo Cutting Board Set", a review should
+  read as if it's about that kind of product (a wooden chopping board) - it
+  might name it, describe it loosely, or just talk about using it
 
 **MANDATORY VALIDATION REQUIREMENTS**:
 {critical_requirements}

@@ -66,7 +66,10 @@ class Review(BaseModel):
     id: Annotated[int, PrimaryKey()]
     customer_id: Annotated[int, ForeignKey(Customer)]
     product_id: Annotated[str, ForeignKey(Product)]
-    rating: Annotated[int, Categorical(weights={"1": 0.05, "3": 0.25, "5": 0.7})]
+    rating: Annotated[
+        int,
+        Categorical(weights={"1": 0.1, "2": 0.1, "3": 0.2, "4": 0.3, "5": 0.3}),
+    ]
     comment: str  # LLM-generated, coherent with the sampled rating
 
 
