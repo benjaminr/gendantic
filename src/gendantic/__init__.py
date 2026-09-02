@@ -28,6 +28,7 @@ from .model_generator import (
 from .relational import (
     Dataset,
     ForeignKey,
+    ForeignKeySpec,
     PrimaryKey,
     generate_dataset,
     generate_dataset_sync,
@@ -48,6 +49,7 @@ __all__ = [
     "generate_dataset_sync",
     "PrimaryKey",
     "ForeignKey",
+    "ForeignKeySpec",
     "Dataset",
     # Export
     "to_dataframe",

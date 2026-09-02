@@ -24,6 +24,7 @@ Example:
     orders = dataset[Order]         # 500 rows, each customer_id in customers
 """
 
+import logging
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin
 
 import numpy as np
 from pydantic import BaseModel
+
+logger = logging.getLogger("gendantic")
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -99,6 +102,45 @@ class ForeignKey:
     null_probability: float = 0.1
 
 
+@dataclass(frozen=True)
+class ForeignKeySpec:
+    """A (possibly composite) foreign key declared at the class level.
+
+    Use this for **composite** foreign keys, where several columns together
+    reference a parent's composite primary key. Declare them in a
+    ``__foreign_keys__`` class attribute (a list of ``ForeignKeySpec``). For the
+    common single-column case, the per-field :class:`ForeignKey` annotation is
+    simpler.
+
+    Args:
+        columns: Local column name(s) forming the foreign key. A bare string is
+            treated as a single-column key.
+        model: The referenced model class, or its name as a string forward
+            reference.
+        references: The parent column name(s) referenced, positionally aligned
+            with ``columns``. Defaults to the parent's primary-key columns.
+        nullable: If True, some rows leave the whole key ``None`` (ignored for
+            columns that are also part of this model's primary key).
+        null_probability: Fraction of rows set to ``None`` when ``nullable``.
+
+    Example:
+        class OrderItem(BaseModel):
+            order_id: int
+            product_id: int
+            __primary_key__ = ("order_id", "product_id")
+            __foreign_keys__ = [
+                ForeignKeySpec(columns="order_id", model="Order"),
+                ForeignKeySpec(columns="product_id", model="Product"),
+            ]
+    """
+
+    columns: tuple[str, ...] | str
+    model: type[BaseModel] | str
+    references: tuple[str, ...] | str | None = None
+    nullable: bool = False
+    null_probability: float = 0.1
+
+
 class Dataset:
     """A generated collection of related tables, keyed by model class.
 
@@ -134,23 +176,113 @@ class Dataset:
         }
 
 
+# --- Internal representations ---------------------------------------------
+#
+# A primary key is one or more columns; a foreign key is one or more columns
+# referencing a parent's primary-key columns. Single-column keys (the common
+# case) are declared with per-field ``PrimaryKey`` / ``ForeignKey`` annotations;
+# composite keys use the class-level ``__primary_key__`` tuple and
+# ``__foreign_keys__`` list of :class:`ForeignKeySpec`. Both are normalised into
+# the tuple-based representations below before generation.
+
+
+@dataclass(frozen=True)
+class _PKColumn:
+    field: str
+    base_type: type
+    spec: PrimaryKey
+
+
+@dataclass(frozen=True)
+class _FKDecl:
+    """An unresolved foreign key: column names plus an (as-yet-unresolved) target."""
+
+    columns: tuple[str, ...]
+    target_ref: type[BaseModel] | str
+    references: tuple[str, ...] | None
+    nullable: bool
+    null_probability: float
+
+
+@dataclass(frozen=True)
+class _ResolvedFK:
+    """A foreign key with its target class resolved and referenced columns filled."""
+
+    columns: tuple[str, ...]
+    target: type[BaseModel]
+    ref_columns: tuple[str, ...]
+    nullable: bool
+    null_probability: float
+
+
+def _field_base_type(model_class: type[BaseModel], name: str) -> type:
+    annotation = getattr(model_class, "__annotations__", {}).get(name)
+    if annotation is None:
+        return str
+    if get_origin(annotation) is Annotated:
+        base = get_args(annotation)[0]
+        return base if isinstance(base, type) else str
+    return annotation if isinstance(annotation, type) else str
+
+
+def _annotated_pks(model_class: type[BaseModel]) -> list[tuple[str, PrimaryKey, type]]:
+    """Return ``(field, PrimaryKey, base_type)`` for each PK-annotated field."""
+    out: list[tuple[str, PrimaryKey, type]] = []
+    for field_name, annotation in getattr(model_class, "__annotations__", {}).items():
+        if get_origin(annotation) is Annotated:
+            args = get_args(annotation)
+            for arg in args[1:]:
+                if isinstance(arg, PrimaryKey):
+                    out.append((field_name, arg, args[0]))
+                    break
+    return out
+
+
+def _primary_key_columns(model_class: type[BaseModel]) -> list[_PKColumn]:
+    """Return the model's primary-key columns, in order.
+
+    Supports composite keys via a ``__primary_key__`` class attribute (a tuple of
+    column names); otherwise every field carrying a ``PrimaryKey`` annotation
+    forms the key, in declaration order.
+    """
+    annotated = {field: (spec, base) for field, spec, base in _annotated_pks(model_class)}
+    declared = getattr(model_class, "__primary_key__", None)
+    if declared is not None:
+        names: tuple[str, ...] = (
+            (declared,) if isinstance(declared, str) else tuple(declared)
+        )
+        cols: list[_PKColumn] = []
+        for name in names:
+            if name in annotated:
+                spec, base = annotated[name]
+            else:
+                spec, base = PrimaryKey(), _field_base_type(model_class, name)
+            cols.append(_PKColumn(name, base, spec))
+        return cols
+    return [_PKColumn(field, base, spec) for field, (spec, base) in annotated.items()]
+
+
+def _primary_key_names(model_class: type[BaseModel]) -> list[str]:
+    return [c.field for c in _primary_key_columns(model_class)]
+
+
 def extract_primary_key(
     model_class: type[BaseModel],
 ) -> tuple[str, PrimaryKey, type] | None:
-    """Return ``(field_name, PrimaryKey, base_type)`` for the model's PK, if any."""
-    annotations = getattr(model_class, "__annotations__", {})
-    for field_name, annotation in annotations.items():
-        if get_origin(annotation) is Annotated:
-            args = get_args(annotation)
-            base_type = args[0]
-            for arg in args[1:]:
-                if isinstance(arg, PrimaryKey):
-                    return field_name, arg, base_type
-    return None
+    """Return ``(field_name, PrimaryKey, base_type)`` for the model's PK, if any.
+
+    For composite primary keys this returns the first key column; use
+    :func:`_primary_key_columns` for the full key.
+    """
+    cols = _primary_key_columns(model_class)
+    if not cols:
+        return None
+    first = cols[0]
+    return first.field, first.spec, first.base_type
 
 
 def extract_foreign_keys(model_class: type[BaseModel]) -> dict[str, ForeignKey]:
-    """Return a mapping of ``field_name -> ForeignKey`` for the model."""
+    """Return a mapping of ``field_name -> ForeignKey`` for per-field annotations."""
     foreign_keys: dict[str, ForeignKey] = {}
     annotations = getattr(model_class, "__annotations__", {})
     for field_name, annotation in annotations.items():
@@ -163,10 +295,40 @@ def extract_foreign_keys(model_class: type[BaseModel]) -> dict[str, ForeignKey]:
     return foreign_keys
 
 
+def _foreign_key_decls(model_class: type[BaseModel]) -> list[_FKDecl]:
+    """Collect every foreign key on a model, from annotations and class attribute.
+
+    Single-column keys come from per-field :class:`ForeignKey` annotations;
+    composite keys come from a ``__foreign_keys__`` list of :class:`ForeignKeySpec`.
+    """
+    decls: list[_FKDecl] = []
+    for field_name, fk in extract_foreign_keys(model_class).items():
+        refs = (fk.field,) if fk.field is not None else None
+        decls.append(
+            _FKDecl((field_name,), fk.model, refs, fk.nullable, fk.null_probability)
+        )
+    for spec in getattr(model_class, "__foreign_keys__", None) or []:
+        columns = (
+            (spec.columns,) if isinstance(spec.columns, str) else tuple(spec.columns)
+        )
+        if spec.references is None:
+            references: tuple[str, ...] | None = None
+        elif isinstance(spec.references, str):
+            references = (spec.references,)
+        else:
+            references = tuple(spec.references)
+        decls.append(
+            _FKDecl(
+                columns, spec.model, references, spec.nullable, spec.null_probability
+            )
+        )
+    return decls
+
+
 def _resolve_fk_model(
-    fk: ForeignKey,
-    referrer: type[BaseModel],
-    fk_field: str,
+    target_ref: type[BaseModel] | str,
+    referrer_name: str,
+    label: str,
     by_name: dict[str, type[BaseModel]],
 ) -> type[BaseModel]:
     """Resolve a foreign key's target to a model class in the dataset.
@@ -174,21 +336,54 @@ def _resolve_fk_model(
     Accepts either a class or a string forward reference (the target's class
     name). Raises ValueError if the target isn't part of the dataset.
     """
-    target = fk.model
-    if isinstance(target, str):
-        resolved = by_name.get(target)
+    if isinstance(target_ref, str):
+        resolved = by_name.get(target_ref)
         if resolved is None:
             raise ValueError(
-                f"{referrer.__name__}.{fk_field} references {target!r}, "
+                f"{referrer_name}.{label} references {target_ref!r}, "
                 f"which is not included in the dataset. Add it with a count."
             )
         return resolved
-    if target not in by_name.values():
+    if target_ref not in by_name.values():
         raise ValueError(
-            f"{referrer.__name__}.{fk_field} references {target.__name__}, "
+            f"{referrer_name}.{label} references {target_ref.__name__}, "
             f"which is not included in the dataset. Add it with a count."
         )
-    return target
+    return target_ref
+
+
+def _resolve_foreign_keys(
+    model_class: type[BaseModel],
+    by_name: dict[str, type[BaseModel]],
+) -> list[_ResolvedFK]:
+    """Resolve every foreign key on a model against the dataset's models."""
+    resolved: list[_ResolvedFK] = []
+    for decl in _foreign_key_decls(model_class):
+        label = "/".join(decl.columns)
+        target = _resolve_fk_model(decl.target_ref, model_class.__name__, label, by_name)
+        parent_pk = _primary_key_names(target)
+        if not parent_pk:
+            raise ValueError(
+                f"{model_class.__name__}.{label} references {target.__name__}, "
+                f"which has no primary key."
+            )
+        ref_columns = decl.references or tuple(parent_pk)
+        if len(ref_columns) != len(decl.columns):
+            raise ValueError(
+                f"{model_class.__name__}.{label} has {len(decl.columns)} column(s) "
+                f"but references {len(ref_columns)} column(s) on {target.__name__}."
+            )
+        if set(ref_columns) != set(parent_pk):
+            raise ValueError(
+                f"{model_class.__name__}.{label} must reference the full primary "
+                f"key of {target.__name__} ({', '.join(parent_pk)})."
+            )
+        resolved.append(
+            _ResolvedFK(
+                decl.columns, target, ref_columns, decl.nullable, decl.null_probability
+            )
+        )
+    return resolved
 
 
 def _resolve_generation_order(
@@ -200,15 +395,13 @@ def _resolve_generation_order(
     references a model that is not being generated.
     """
     by_name = {m.__name__: m for m in models}
-    # edges: parent -> {children}; in_degree counts unresolved parents per model
     dependencies: dict[type[BaseModel], set[type[BaseModel]]] = {
         m: set() for m in models
     }
     for model in models:
-        for fk_field, fk in extract_foreign_keys(model).items():
-            target = _resolve_fk_model(fk, model, fk_field, by_name)
-            if target is not model:
-                dependencies[model].add(target)
+        for fk in _resolve_foreign_keys(model, by_name):
+            if fk.target is not model:
+                dependencies[model].add(fk.target)
 
     order: list[type[BaseModel]] = []
     resolved: set[type[BaseModel]] = set()
@@ -229,54 +422,204 @@ def _resolve_generation_order(
     return order
 
 
-def _assign_foreign_keys(
-    prefilled: list[dict[str, Any]],
-    fk_field: str,
-    fk: ForeignKey,
-    parent_pool: list[Any],
-    rng: np.random.Generator,
+def _write_fk(
+    row: dict[str, Any],
+    fk: _ResolvedFK,
+    parent_tuple: tuple[Any, ...],
+    parent_pk_names: list[str],
 ) -> None:
-    """Assign each row a foreign-key value drawn uniformly from ``parent_pool``."""
-    for row in prefilled:
-        if fk.nullable and rng.random() < fk.null_probability:
-            row[fk_field] = None
+    """Copy the referenced parent's key values into this row's FK columns."""
+    value_by_parent_col = dict(zip(parent_pk_names, parent_tuple, strict=True))
+    for local_col, ref_col in zip(fk.columns, fk.ref_columns, strict=True):
+        row[local_col] = value_by_parent_col[ref_col]
+
+
+def _sample_distinct_combos(
+    pool_sizes: list[int], count: int, rng: np.random.Generator
+) -> list[tuple[int, ...]]:
+    """Sample up to ``count`` distinct index combinations across parent pools.
+
+    Used for join tables whose primary key is made up of its foreign keys: each
+    row must be a distinct combination of parents. Returns fewer than ``count``
+    combinations only when the space of combinations is itself smaller.
+    """
+    total = 1
+    for size in pool_sizes:
+        total *= size
+    want = min(count, total)
+    if total == 0:
+        return []
+    if total <= 200_000:
+        import itertools
+
+        all_combos = list(itertools.product(*[range(size) for size in pool_sizes]))
+        chosen = rng.choice(len(all_combos), size=want, replace=False)
+        return [all_combos[int(i)] for i in chosen]
+    seen: set[tuple[int, ...]] = set()
+    out: list[tuple[int, ...]] = []
+    while len(out) < want:
+        combo = tuple(int(rng.integers(size)) for size in pool_sizes)
+        if combo not in seen:
+            seen.add(combo)
+            out.append(combo)
+    return out
+
+
+def _owned_pk_is_unique(
+    owned: list[_PKColumn], owned_values: dict[str, list[Any]], count: int
+) -> bool:
+    """True if any owned PK column already yields ``count`` distinct values."""
+    return any(len(set(owned_values[c.field])) == count for c in owned)
+
+
+def _generate_keys(
+    model_class: type[BaseModel],
+    count: int,
+    pk_cols: list[_PKColumn],
+    resolved_fks: list[_ResolvedFK],
+    pk_pools: dict[type[BaseModel], list[tuple[Any, ...]]],
+    tables: dict[type[BaseModel], list[BaseModel]],
+    rng: np.random.Generator,
+) -> tuple[
+    list[dict[str, Any]], list[tuple[Any, ...]] | None, list[dict[str, Any]], int
+]:
+    """Assign primary and foreign keys for one model's rows.
+
+    Returns ``(prefilled_rows, pk_pool, relational_context, count)``. ``count``
+    may be reduced when a join-table primary key has fewer possible distinct
+    combinations than requested.
+    """
+    pk_names = [c.field for c in pk_cols]
+    pk_name_set = set(pk_names)
+    fk_covered = {col for fk in resolved_fks for col in fk.columns}
+    # FKs that (partly) form the primary key vs. plain FKs.
+    pk_fks = [fk for fk in resolved_fks if any(c in pk_name_set for c in fk.columns)]
+    plain_fks = [fk for fk in resolved_fks if fk not in pk_fks]
+    owned_pk = [c for c in pk_cols if c.field not in fk_covered]
+
+    prefilled: list[dict[str, Any]] = [{} for _ in range(count)]
+
+    # --- Primary key ---
+    if pk_cols:
+        owned_values = {
+            c.field: c.spec.generate(count, c.base_type, rng) for c in owned_pk
+        }
+        owned_unique = _owned_pk_is_unique(owned_pk, owned_values, count)
+
+        if pk_fks and not owned_unique:
+            # Join-table style: the key is (partly) its foreign keys, so we must
+            # pick distinct combinations of the referenced parents.
+            pool_sizes = [len(pk_pools[fk.target]) for fk in pk_fks]
+            combos = _sample_distinct_combos(pool_sizes, count, rng)
+            if len(combos) < count:
+                logger.warning(
+                    "%s: only %d distinct primary-key combinations are possible "
+                    "(requested %d); generating %d rows.",
+                    model_class.__name__,
+                    len(combos),
+                    count,
+                    len(combos),
+                )
+                count = len(combos)
+                prefilled = prefilled[:count]
+                owned_values = {k: v[:count] for k, v in owned_values.items()}
+            for row, combo in zip(prefilled, combos, strict=True):
+                for fk, pool_idx in zip(pk_fks, combo, strict=True):
+                    _write_fk(
+                        row,
+                        fk,
+                        pk_pools[fk.target][pool_idx],
+                        _primary_key_names(fk.target),
+                    )
         else:
-            row[fk_field] = parent_pool[int(rng.integers(len(parent_pool)))]
+            # Owned columns guarantee uniqueness (or there are no PK-forming FKs):
+            # pick any parent for the PK-forming FKs at random.
+            for fk in pk_fks:
+                pool = pk_pools[fk.target]
+                parent_pk_names = _primary_key_names(fk.target)
+                for row in prefilled:
+                    idx = int(rng.integers(len(pool)))
+                    _write_fk(row, fk, pool[idx], parent_pk_names)
+
+        for c in owned_pk:
+            for row, value in zip(prefilled, owned_values[c.field], strict=True):
+                row[c.field] = value
+
+        pk_pool: list[tuple[Any, ...]] | None = [
+            tuple(row[name] for name in pk_names) for row in prefilled
+        ]
+    else:
+        pk_pool = None
+
+    # Pools available for FK assignment, including this model's own pool so that
+    # self-referential foreign keys can be satisfied.
+    pools = dict(pk_pools)
+    if pk_pool is not None:
+        pools[model_class] = pk_pool
+
+    # --- Plain (non-PK) foreign keys ---
+    for fk in plain_fks:
+        pool = pools[fk.target]
+        parent_pk_names = _primary_key_names(fk.target)
+        for row in prefilled:
+            if fk.nullable and rng.random() < fk.null_probability:
+                for col in fk.columns:
+                    row[col] = None
+            else:
+                idx = int(rng.integers(len(pool)))
+                _write_fk(row, fk, pool[idx], parent_pk_names)
+
+    # --- Relational context for the LLM ---
+    relational_context: list[dict[str, Any]] = [{} for _ in range(count)]
+    for fk in resolved_fks:
+        _attach_relational_context(
+            relational_context, prefilled, fk, pools, tables.get(fk.target, [])
+        )
+    return prefilled, pk_pool, relational_context, count
 
 
 def _attach_relational_context(
     relational_context: list[dict[str, Any]],
     prefilled: list[dict[str, Any]],
-    fk_field: str,
-    parent_pk_field: str,
-    parent_pk_pool: list[Any],
+    fk: _ResolvedFK,
+    pk_pools: dict[type[BaseModel], list[tuple[Any, ...]]],
     parent_rows: list[BaseModel],
 ) -> None:
     """Fold each referenced parent row's attributes into per-row LLM context.
 
     For every child row, looks up the parent row its foreign key points at and
-    records that parent's attributes (minus the parent's own primary key) under
-    a readable key (the foreign-key field name without a trailing ``_id``). This
-    lets the LLM generate text coherent with the actual related row rather than
-    an opaque key value. Skipped for ``None`` foreign keys.
+    records that parent's attributes (minus the parent's own primary key) under a
+    readable key: a single ``*_id`` column becomes its stem (``customer_id`` ->
+    ``customer``); otherwise the referenced model's name is used. Rows whose
+    foreign key is ``None`` are skipped.
     """
     if not parent_rows:
         return
-    parent_by_pk = dict(zip(parent_pk_pool, parent_rows, strict=True))
-    key = fk_field[:-3] if fk_field.endswith("_id") else fk_field
+    parent_pk_names = _primary_key_names(fk.target)
+    parent_by_pk = dict(zip(pk_pools[fk.target], parent_rows, strict=True))
+
+    if len(fk.columns) == 1 and fk.columns[0].endswith("_id"):
+        key = fk.columns[0][:-3]
+    elif len(fk.columns) == 1:
+        key = fk.columns[0]
+    else:
+        name = fk.target.__name__
+        key = name[0].lower() + name[1:]
+
+    ref_by_parent = dict(zip(fk.columns, fk.ref_columns, strict=True))
     for row, ctx in zip(prefilled, relational_context, strict=True):
-        fk_value = row.get(fk_field)
-        if fk_value is None:
+        values = {ref_by_parent[col]: row.get(col) for col in fk.columns}
+        if any(v is None for v in values.values()):
             continue
-        parent = parent_by_pk.get(fk_value)
+        parent_tuple = tuple(values[name] for name in parent_pk_names)
+        parent = parent_by_pk.get(parent_tuple)
         if parent is None:
             continue
-        attributes = {
+        ctx[key] = {
             name: value
             for name, value in parent.model_dump().items()
-            if name != parent_pk_field
+            if name not in parent_pk_names
         }
-        ctx[key] = attributes
 
 
 async def generate_dataset(
@@ -306,47 +649,24 @@ async def generate_dataset(
     by_name = {m.__name__: m for m in counts}
     key_rng = np.random.default_rng(seed)
 
-    pk_pools: dict[type[BaseModel], list[Any]] = {}
+    pk_pools: dict[type[BaseModel], list[tuple[Any, ...]]] = {}
     tables: dict[type[BaseModel], list[BaseModel]] = {}
 
     for idx, model in enumerate(order):
-        count = counts[model]
-        prefilled: list[dict[str, Any]] = [{} for _ in range(count)]
-        relational_context: list[dict[str, Any]] = [{} for _ in range(count)]
+        pk_cols = _primary_key_columns(model)
+        resolved_fks = _resolve_foreign_keys(model, by_name)
 
-        # Primary key: generate unique values and record the pool for children.
-        pk_info = extract_primary_key(model)
-        if pk_info is not None:
-            pk_field, pk_spec, pk_type = pk_info
-            pk_values = pk_spec.generate(count, pk_type, key_rng)
-            for row, value in zip(prefilled, pk_values, strict=True):
-                row[pk_field] = value
-            pk_pools[model] = pk_values
-
-        # Foreign keys: draw from the referenced model's primary-key pool.
-        for fk_field, fk in extract_foreign_keys(model).items():
-            target = _resolve_fk_model(fk, model, fk_field, by_name)
-            parent_pk = extract_primary_key(target)
-            if parent_pk is None:
-                raise ValueError(
-                    f"{model.__name__}.{fk_field} references {target.__name__}, "
-                    f"which has no PrimaryKey field."
-                )
-            if fk.field is not None and fk.field != parent_pk[0]:
-                raise ValueError(
-                    f"{model.__name__}.{fk_field} references "
-                    f"{target.__name__}.{fk.field}, but foreign keys must "
-                    f"reference the primary key ({target.__name__}.{parent_pk[0]})."
-                )
-            _assign_foreign_keys(prefilled, fk_field, fk, pk_pools[target], key_rng)
-            _attach_relational_context(
-                relational_context,
-                prefilled,
-                fk_field,
-                parent_pk[0],
-                pk_pools.get(target, []),
-                tables.get(target, []),
-            )
+        prefilled, pk_pool, relational_context, count = _generate_keys(
+            model,
+            counts[model],
+            pk_cols,
+            resolved_fks,
+            pk_pools,
+            tables,
+            key_rng,
+        )
+        if pk_pool is not None:
+            pk_pools[model] = pk_pool
 
         model_seed = None if seed is None else seed + idx + 1
         tables[model] = await _generate_with_distribution_sampling(
