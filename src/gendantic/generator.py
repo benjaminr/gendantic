@@ -160,6 +160,7 @@ async def _generate_with_distribution_sampling(
     count: int,
     context: str,
     seed: int | None,
+    prefilled: list[dict[str, Any]] | None = None,
 ) -> list[BaseModel]:
     """
     Generate data using numpy sampling for distribution fields and LLM for the rest.
@@ -171,6 +172,10 @@ async def _generate_with_distribution_sampling(
     4. Merges and validates the results
 
     If no distribution specs are found, falls back to full LLM generation.
+
+    ``prefilled`` supplies engine-provided per-record values (e.g. primary and
+    foreign keys from relational generation). These are merged into each record
+    and excluded from both numpy sampling and LLM generation.
     """
     # 1. Extract distribution specs from Annotated types (with type info for proper casting)
     dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
@@ -186,9 +191,16 @@ async def _generate_with_distribution_sampling(
         dist_specs, count, correlations=correlations
     )
 
-    # 3. Identify fields that need LLM generation
+    # 3a. Merge in any engine-prefilled fields (primary/foreign keys)
+    prefilled_fields: set[str] = set()
+    if prefilled is not None:
+        for record, extra in zip(partial_records, prefilled, strict=True):
+            record.update(extra)
+            prefilled_fields.update(extra.keys())
+
+    # 4. Identify fields that need LLM generation
     all_fields = set(model_class.model_fields.keys())
-    sampled_fields = set(dist_specs.keys())
+    sampled_fields = set(dist_specs.keys()) | prefilled_fields
     fields_to_generate = all_fields - sampled_fields
 
     if fields_to_generate:

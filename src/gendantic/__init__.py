@@ -25,6 +25,13 @@ from .model_generator import (
     extend_model_with_distributions,
     generate_model_from_description,
 )
+from .relational import (
+    Dataset,
+    ForeignKey,
+    PrimaryKey,
+    generate_dataset,
+    generate_dataset_sync,
+)
 from .sampler import DistributionSampler
 
 __all__ = [
@@ -36,6 +43,12 @@ __all__ = [
     "generate_model_from_description",
     "extend_model_with_distributions",
     "extend_model_with_correlations",
+    # Relational / multi-model
+    "generate_dataset",
+    "generate_dataset_sync",
+    "PrimaryKey",
+    "ForeignKey",
+    "Dataset",
     # Export
     "to_dataframe",
     # Distribution specs
