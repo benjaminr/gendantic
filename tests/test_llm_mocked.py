@@ -20,6 +20,7 @@ from gendantic import (
     generate_model_from_description,
     generate_synthetic_data,
     generate_synthetic_data_batch,
+    generate_synthetic_data_sync,
 )
 
 # A canned analysis payload matching LLMDrivenModelAnalyser._ANALYSIS_SCHEMA.
@@ -185,6 +186,26 @@ async def test_all_distribution_fields_skips_llm() -> None:
 
     assert len(rows) == 5
     assert calls["field"] == 0  # no field-generation LLM call
+
+
+def test_sync_wrapper_runs_without_event_loop() -> None:
+    """generate_synthetic_data_sync runs the async pipeline via asyncio.run."""
+    client = make_fake_client(
+        lambda i: {"name": f"Person {i}", "email": f"person{i}@example.com"}
+    )
+    with patch_clients(client):
+        rows = generate_synthetic_data_sync(Employee, count=3, seed=42)
+
+    assert len(rows) == 3
+    assert all(isinstance(r, Employee) for r in rows)
+    assert all(22 <= r.age <= 65 for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_sync_wrapper_rejects_running_loop() -> None:
+    """Calling the sync wrapper inside a running loop raises a clear error."""
+    with pytest.raises(RuntimeError, match="running.*event loop"):
+        generate_synthetic_data_sync(Employee, count=1)
 
 
 @pytest.mark.asyncio
