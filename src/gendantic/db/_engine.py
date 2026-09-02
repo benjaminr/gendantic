@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union
+from typing import Any
 
 try:
     from sqlalchemy import create_engine
@@ -12,9 +12,6 @@ except ImportError as exc:  # pragma: no cover - exercised via message assertion
         "gendantic.db requires the 'db' extra. Install it with: "
         "pip install 'gendantic[db]'"
     ) from exc
-
-if TYPE_CHECKING:
-    EngineSource = Union[str, Engine]
 
 
 def as_engine(source: "str | Engine") -> Engine:

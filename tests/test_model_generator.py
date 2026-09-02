@@ -146,6 +146,88 @@ x = __builtins__
         with pytest.raises(CodeValidationError, match="Forbidden"):
             _validate_code_safety(code)
 
+    def test_reject_for_loop(self):
+        """A for-loop is not a permitted node type and is rejected."""
+        code = """
+class Model(BaseModel):
+    name: str
+
+    def bad(self):
+        for i in range(3):
+            pass
+"""
+        with pytest.raises(CodeValidationError, match="Disallowed syntax 'For'"):
+            _validate_code_safety(code)
+
+    def test_reject_while_loop(self):
+        """A while-loop is not a permitted node type and is rejected."""
+        code = """
+class Model(BaseModel):
+    name: str
+
+    def bad(self):
+        while True:
+            pass
+"""
+        with pytest.raises(CodeValidationError, match="Disallowed syntax 'While'"):
+            _validate_code_safety(code)
+
+    def test_reject_with_statement(self):
+        """A with-statement (context manager) is rejected."""
+        code = """
+class Model(BaseModel):
+    name: str
+
+    def bad(self):
+        with self.thing() as t:
+            return t
+"""
+        with pytest.raises(CodeValidationError, match="Disallowed syntax 'With'"):
+            _validate_code_safety(code)
+
+    def test_reject_lambda(self):
+        """A lambda expression is rejected."""
+        code = """
+class Model(BaseModel):
+    name: str = Field(default_factory=lambda: "x")
+"""
+        with pytest.raises(CodeValidationError, match="Disallowed syntax 'Lambda'"):
+            _validate_code_safety(code)
+
+    def test_reject_unknown_function_call(self):
+        """A call to a name outside the allowlist is rejected."""
+        code = """
+class Model(BaseModel):
+    name: str = print("hi")
+"""
+        with pytest.raises(CodeValidationError, match="Call to 'print' not allowed"):
+            _validate_code_safety(code)
+
+    def test_allow_fstring_in_validator(self):
+        """f-strings are permitted (common in validator error messages)."""
+        code = '''
+class User(BaseModel):
+    """A user."""
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v):
+        if not v:
+            raise ValueError(f"bad name: {v}")
+        return v
+'''
+        _validate_code_safety(code)  # Should not raise
+
+    def test_allow_union_type_hint(self):
+        """`X | None` union annotations are permitted."""
+        code = '''
+class Model(BaseModel):
+    """A model with a union field."""
+    nickname: str | None = None
+'''
+        _validate_code_safety(code)  # Should not raise
+
 
 class TestModelCodeExecution:
     """Test the safe execution of validated model code."""

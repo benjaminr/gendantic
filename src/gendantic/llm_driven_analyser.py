@@ -433,7 +433,6 @@ class LLMDrivenModelAnalyser:
                 "use_case": "data_storage",
                 "data_patterns": "basic_fields",
             },
-            "field_generation_strategies": {},
             "generation_guidance": {
                 "overall_strategy": "Generate basic realistic data respecting Pydantic constraints",
                 "field_relationships": "Consider field types and constraints",

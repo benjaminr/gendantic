@@ -511,8 +511,3 @@ class Correlations:
                 lines.append(f'    ("{f1}", "{f2}", {corr}, "{copula}"),')
         lines.append(")")
         return "\n".join(lines)
-
-
-def is_distribution_spec(obj: Any) -> bool:
-    """Check if an object is a distribution specification."""
-    return isinstance(obj, DistributionSpec)

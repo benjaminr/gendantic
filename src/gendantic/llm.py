@@ -1,6 +1,5 @@
 """LLM client using LiteLLM proxy for unified model access."""
 
-import asyncio
 import json
 import os
 from typing import Any
@@ -142,16 +141,6 @@ class LiteLLMClient:
                 f"Authentication failed for LiteLLM proxy. "
                 f"Check LITELLM_API_KEY. Error: {e}"
             ) from e
-
-    async def generate_batch(
-        self, schema: dict[str, Any], prompts: list[str], count: int = 1
-    ) -> list[list[dict[str, Any]]]:
-        """Generate multiple structured data batches concurrently."""
-        tasks = [
-            self.generate_structured(schema=schema, prompt=prompt, count=count)
-            for prompt in prompts
-        ]
-        return await asyncio.gather(*tasks)
 
 
 # Module-level client instance (lazy initialization)
