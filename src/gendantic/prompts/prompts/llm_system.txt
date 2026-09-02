@@ -1,7 +1,0 @@
-Generate {count} realistic synthetic data records as a JSON object with an 'items' array.
-Schema: {schema}
-Requirements:
-- Return JSON object with 'items' array containing the records
-- Ensure realistic, diverse values
-- Follow all schema constraints
-- Example format: {{"items": [record1, record2, ...]}}
