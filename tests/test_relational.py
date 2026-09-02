@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from gendantic import (
     ForeignKey,
+    ForeignKeySpec,
     Normal,
     PrimaryKey,
     generate_dataset,
@@ -243,6 +244,92 @@ def test_cyclic_dependency_raises() -> None:
 
     with pytest.raises(ValueError, match="[Cc]yclic"):
         _resolve_generation_order([A, B])
+
+
+@pytest.mark.asyncio
+async def test_composite_primary_key_join_table() -> None:
+    """A join table whose PK is its two foreign keys stays referentially sound."""
+
+    class Prod(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+
+    class OrderItem(BaseModel):
+        order_id: Annotated[int, ForeignKey(Customer)]
+        product_id: int
+        quantity: Annotated[int, Normal(mean=2, std=1)]
+        __primary_key__ = ("order_id", "product_id")
+        __foreign_keys__ = [
+            ForeignKeySpec(columns="product_id", model="Prod"),
+        ]
+
+    with patch_clients(make_fake_client()):
+        dataset = await generate_dataset(
+            {Customer: 5, Prod: 4, OrderItem: 12}, seed=1
+        )
+
+    items = dataset[OrderItem]
+    customer_ids = {c.id for c in dataset[Customer]}
+    product_ids = {p.id for p in dataset[Prod]}
+    assert len(items) == 12
+    # Referential integrity on both key columns.
+    assert all(i.order_id in customer_ids for i in items)
+    assert all(i.product_id in product_ids for i in items)
+    # The composite primary key (order_id, product_id) is unique per row.
+    pairs = [(i.order_id, i.product_id) for i in items]
+    assert len(set(pairs)) == len(pairs)
+
+
+@pytest.mark.asyncio
+async def test_composite_key_caps_at_available_combinations() -> None:
+    """Requesting more join rows than distinct combinations caps the count."""
+
+    class Prod(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+
+    class OrderItem(BaseModel):
+        order_id: Annotated[int, ForeignKey(Customer)]
+        product_id: int
+        __primary_key__ = ("order_id", "product_id")
+        __foreign_keys__ = [ForeignKeySpec(columns="product_id", model="Prod")]
+
+    with patch_clients(make_fake_client()):
+        # 2 customers x 2 products = 4 possible distinct pairs, but 10 requested.
+        dataset = await generate_dataset({Customer: 2, Prod: 2, OrderItem: 10}, seed=2)
+
+    items = dataset[OrderItem]
+    assert len(items) == 4  # capped at the number of distinct combinations
+    pairs = [(i.order_id, i.product_id) for i in items]
+    assert len(set(pairs)) == 4
+
+
+@pytest.mark.asyncio
+async def test_composite_foreign_key_to_composite_primary_key() -> None:
+    """A child can reference a parent's composite primary key across two columns."""
+
+    class Building(BaseModel):
+        site: Annotated[int, PrimaryKey()]
+        floor: Annotated[int, PrimaryKey()]
+
+    class Room(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+        b_site: int
+        b_floor: int
+        __foreign_keys__ = [
+            ForeignKeySpec(
+                columns=("b_site", "b_floor"),
+                model="Building",
+                references=("site", "floor"),
+            )
+        ]
+
+    with patch_clients(make_fake_client()):
+        dataset = await generate_dataset({Building: 6, Room: 20}, seed=3)
+
+    buildings = {(b.site, b.floor) for b in dataset[Building]}
+    rooms = dataset[Room]
+    assert len(rooms) == 20
+    assert all((r.b_site, r.b_floor) in buildings for r in rooms)
+    assert len({r.id for r in rooms}) == 20  # surrogate PK still unique
 
 
 def test_sync_wrapper_and_to_dataframes() -> None:
