@@ -17,10 +17,13 @@ from pydantic import BaseModel, Field
 from gendantic import (
     Beta,
     Categorical,
+    ForeignKey,
     LogNormal,
     Normal,
     Poisson,
+    PrimaryKey,
     Uniform,
+    generate_dataset,
     generate_model_from_description,
     generate_synthetic_data,
     generate_synthetic_data_batch,
@@ -213,6 +216,53 @@ async def demo_batch_generation():
         print()
 
 
+# Example 3: Related models for relational generation
+class Store(BaseModel):
+    """A retail store (parent table)."""
+
+    id: Annotated[int, PrimaryKey()]
+    name: str  # LLM-generated
+    region: Annotated[
+        str,
+        Categorical(weights={"North": 0.3, "South": 0.25, "East": 0.25, "West": 0.2}),
+    ]
+
+
+class Purchase(BaseModel):
+    """A purchase made at a store (child table with a foreign key)."""
+
+    id: Annotated[str, PrimaryKey(strategy="uuid")]
+    store_id: Annotated[int, ForeignKey(Store)]
+    item: str  # LLM-generated
+    amount: Annotated[float, LogNormal(mean=3.0, sigma=0.6)]
+
+
+async def demo_relational():
+    """Demonstrate multi-model generation with referential integrity."""
+    print("=" * 60)
+    print("6. Relational Generation (foreign keys)")
+    print("=" * 60)
+    print("\nGenerating related Stores and Purchases with valid foreign keys:\n")
+
+    dataset = await generate_dataset({Store: 5, Purchase: 20}, seed=42)
+    stores = dataset[Store]
+    purchases = dataset[Purchase]
+
+    stores_by_id = {s.id: s for s in stores}
+    # Referential integrity holds by construction:
+    assert all(p.store_id in stores_by_id for p in purchases)
+
+    print(f"Generated {len(stores)} stores and {len(purchases)} purchases.")
+    print("Every purchase references a real store:\n")
+    for purchase in purchases[:5]:
+        store = stores_by_id[purchase.store_id]
+        print(
+            f"  {purchase.item} (£{purchase.amount:,.2f}) "
+            f"@ {store.name} [{store.region}]"
+        )
+    print()
+
+
 async def main():
     """Run all demonstrations."""
     print("\nGendantic - Intelligent Synthetic Data Generation")
@@ -225,6 +275,7 @@ async def main():
         await demo_dynamic_model()
         await demo_context_aware()
         await demo_batch_generation()
+        await demo_relational()
 
         print("=" * 60)
         print("All demonstrations complete!")
@@ -232,9 +283,9 @@ async def main():
 
     except ValueError as e:
         print(f"\nError: {e}")
-        print("\nTo run this example, set either:")
-        print("  export OPENAI_API_KEY='your-key'")
-        print("  export ANTHROPIC_API_KEY='your-key'")
+        print("\nTo run this example, point gendantic at a LiteLLM proxy:")
+        print("  export LITELLM_API_BASE='http://localhost:4000'")
+        print("  export LITELLM_MODEL='gpt-4o-mini'")
 
 
 if __name__ == "__main__":
