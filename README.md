@@ -384,8 +384,14 @@ assert all(o.customer_id in {c.id for c in customers} for o in orders)
 - **Primary keys**: `PrimaryKey(strategy=...)` — `"auto"` (default: sequential
   ints for `int` fields, UUID hex for `str`), `"sequential"`, or `"uuid"`.
 - **Foreign keys**: `ForeignKey(Model, field=None, nullable=False, null_probability=0.1)`
-  — each row is assigned a random primary key from the referenced model.
-- **Self-references** (e.g. `manager_id` → same model) are supported.
+  — each row is assigned a random primary key from the referenced model. `Model`
+  may be a class or its name as a string.
+- **Self-references** (e.g. `manager_id` → same model) use a string forward
+  reference, since the class isn't defined inside its own body:
+  `manager_id: Annotated[int | None, ForeignKey("Employee", nullable=True)] = None`.
+- **Relational context**: when a child's foreign key points at a parent, the
+  parent row's attributes are passed to the LLM as context so generated text is
+  consistent with the referenced row (not just an opaque key).
 - Use `generate_dataset_sync(...)` outside an event loop, and
   `dataset.to_dataframes()` to get a `{model_name: DataFrame}` mapping.
 
@@ -407,6 +413,18 @@ export LITELLM_API_KEY="your-proxy-key"   # if the proxy requires auth
 export LITELLM_MODEL="openai/gpt-4o-mini"
 uv run python examples/relational_llm.py
 ```
+
+### More examples
+
+The [`examples/`](examples/) directory has runnable scripts for the main
+patterns:
+
+| Example | LLM? | Shows |
+|---------|------|-------|
+| [`llm_single_model.py`](examples/llm_single_model.py) | yes | Single model: a minimal text-only case, plus distributions correlated with a copula |
+| [`relational_quickstart.py`](examples/relational_quickstart.py) | no | Basic three-table relational generation with referential integrity |
+| [`relational_hierarchy.py`](examples/relational_hierarchy.py) | no | Self-references (string forward ref), nullable foreign keys, `to_dataframes()` |
+| [`relational_llm.py`](examples/relational_llm.py) | yes | Relational generation where the LLM writes semantic fields coherent with related rows |
 
 ## Configuration
 

@@ -176,6 +176,25 @@ async def test_uuid_primary_key_strategy() -> None:
     assert all(isinstance(i, str) and len(i) == 32 for i in ids)
 
 
+def test_self_reference_via_string_forward_ref() -> None:
+    """A model can reference itself using a string forward reference."""
+
+    class Employee(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+        manager_id: Annotated[
+            int | None, ForeignKey("Employee", nullable=True, null_probability=0.3)
+        ] = None
+
+    with patch_clients(make_fake_client()):
+        dataset = generate_dataset_sync({Employee: 15}, seed=4)
+
+    employees = dataset[Employee]
+    ids = {e.id for e in employees}
+    managers = [e.manager_id for e in employees]
+    assert any(m is None for m in managers)  # at least one top-level employee
+    assert all(m in ids for m in managers if m is not None)  # valid references
+
+
 @pytest.mark.asyncio
 async def test_nullable_foreign_key() -> None:
     class Ticket(BaseModel):

@@ -18,6 +18,13 @@ logger = logging.getLogger("gendantic")
 
 _T = TypeVar("_T")
 
+# A single reusable event loop backs the synchronous wrappers. Using one
+# persistent loop (instead of ``asyncio.run``, which creates and tears down a
+# fresh loop per call) keeps litellm's cached async HTTP clients bound to a
+# live loop, so repeated ``*_sync`` calls in one process don't raise
+# "bound to a different event loop".
+_sync_loop: asyncio.AbstractEventLoop | None = None
+
 
 def _run_coro(coro: Coroutine[Any, Any, _T]) -> _T:
     """Run an async coroutine from synchronous code.
@@ -28,14 +35,19 @@ def _run_coro(coro: Coroutine[Any, Any, _T]) -> _T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        pass  # no running loop - safe to drive one ourselves
+    else:
+        coro.close()
+        raise RuntimeError(
+            "A synchronous gendantic function was called from inside a running "
+            "event loop. Use the async API instead (e.g. "
+            "`await generate_synthetic_data(...)`)."
+        )
 
-    coro.close()
-    raise RuntimeError(
-        "A synchronous gendantic function was called from inside a running "
-        "event loop. Use the async API instead (e.g. "
-        "`await generate_synthetic_data(...)`)."
-    )
+    global _sync_loop
+    if _sync_loop is None or _sync_loop.is_closed():
+        _sync_loop = asyncio.new_event_loop()
+    return _sync_loop.run_until_complete(coro)
 
 
 async def generate_synthetic_data(
