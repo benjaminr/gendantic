@@ -216,6 +216,41 @@ def _assign_foreign_keys(
             row[fk_field] = parent_pool[int(rng.integers(len(parent_pool)))]
 
 
+def _attach_relational_context(
+    relational_context: list[dict[str, Any]],
+    prefilled: list[dict[str, Any]],
+    fk_field: str,
+    parent_pk_field: str,
+    parent_pk_pool: list[Any],
+    parent_rows: list[BaseModel],
+) -> None:
+    """Fold each referenced parent row's attributes into per-row LLM context.
+
+    For every child row, looks up the parent row its foreign key points at and
+    records that parent's attributes (minus the parent's own primary key) under
+    a readable key (the foreign-key field name without a trailing ``_id``). This
+    lets the LLM generate text coherent with the actual related row rather than
+    an opaque key value. Skipped for ``None`` foreign keys.
+    """
+    if not parent_rows:
+        return
+    parent_by_pk = dict(zip(parent_pk_pool, parent_rows, strict=True))
+    key = fk_field[:-3] if fk_field.endswith("_id") else fk_field
+    for row, ctx in zip(prefilled, relational_context, strict=True):
+        fk_value = row.get(fk_field)
+        if fk_value is None:
+            continue
+        parent = parent_by_pk.get(fk_value)
+        if parent is None:
+            continue
+        attributes = {
+            name: value
+            for name, value in parent.model_dump().items()
+            if name != parent_pk_field
+        }
+        ctx[key] = attributes
+
+
 async def generate_dataset(
     counts: dict[type[BaseModel], int],
     *,
@@ -248,6 +283,7 @@ async def generate_dataset(
     for idx, model in enumerate(order):
         count = counts[model]
         prefilled: list[dict[str, Any]] = [{} for _ in range(count)]
+        relational_context: list[dict[str, Any]] = [{} for _ in range(count)]
 
         # Primary key: generate unique values and record the pool for children.
         pk_info = extract_primary_key(model)
@@ -273,10 +309,23 @@ async def generate_dataset(
                     f"reference the primary key ({fk.model.__name__}.{parent_pk[0]})."
                 )
             _assign_foreign_keys(prefilled, fk_field, fk, pk_pools[fk.model], key_rng)
+            _attach_relational_context(
+                relational_context,
+                prefilled,
+                fk_field,
+                parent_pk[0],
+                pk_pools.get(fk.model, []),
+                tables.get(fk.model, []),
+            )
 
         model_seed = None if seed is None else seed + idx + 1
         tables[model] = await _generate_with_distribution_sampling(
-            model, count, context, model_seed, prefilled=prefilled
+            model,
+            count,
+            context,
+            model_seed,
+            prefilled=prefilled,
+            relational_context=relational_context,
         )
 
     return Dataset(tables)

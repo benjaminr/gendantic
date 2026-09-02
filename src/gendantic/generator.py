@@ -161,6 +161,7 @@ async def _generate_with_distribution_sampling(
     context: str,
     seed: int | None,
     prefilled: list[dict[str, Any]] | None = None,
+    relational_context: list[dict[str, Any]] | None = None,
 ) -> list[BaseModel]:
     """
     Generate data using numpy sampling for distribution fields and LLM for the rest.
@@ -176,6 +177,11 @@ async def _generate_with_distribution_sampling(
     ``prefilled`` supplies engine-provided per-record values (e.g. primary and
     foreign keys from relational generation). These are merged into each record
     and excluded from both numpy sampling and LLM generation.
+
+    ``relational_context`` supplies per-record data about the rows a record's
+    foreign keys point at (e.g. the referenced product's name and category). It
+    is shown to the LLM as context so generated text is coherent with the
+    related rows, but it is never stored as a field on the record itself.
     """
     # 1. Extract distribution specs from Annotated types (with type info for proper casting)
     dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
@@ -210,6 +216,7 @@ async def _generate_with_distribution_sampling(
             partial_records,
             fields_to_generate,
             context,
+            relational_context=relational_context,
         )
         # 5. Merge sampled + generated
         records = _merge_records(partial_records, llm_outputs)
@@ -227,6 +234,7 @@ async def _generate_remaining_fields(
     fields_to_generate: set[str],
     context: str,
     batch_size: int = 15,
+    relational_context: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Use LLM to generate the remaining fields not covered by distributions.
@@ -269,10 +277,21 @@ async def _generate_remaining_fields(
 
     client = get_client()
 
+    # For display to the LLM, fold each record's related-row context into the
+    # record shown in the prompt (under "related_records") so generated text can
+    # be coherent with the rows its foreign keys point at. This never becomes a
+    # stored field — only the fields in ``fields_to_generate`` are kept.
+    display_records = list(partial_records)
+    if relational_context is not None:
+        display_records = [
+            {**record, "related_records": ctx} if ctx else dict(record)
+            for record, ctx in zip(partial_records, relational_context, strict=True)
+        ]
+
     # Batch the records to avoid LLM output token limits
     batches = [
-        partial_records[i : i + batch_size]
-        for i in range(0, len(partial_records), batch_size)
+        display_records[i : i + batch_size]
+        for i in range(0, len(display_records), batch_size)
     ]
 
     async def generate_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
