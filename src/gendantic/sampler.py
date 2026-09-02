@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy import integrate, optimize, stats
 
 from .distributions import CopulaType, Correlations, DistributionSpec
@@ -112,7 +113,7 @@ class DistributionSampler:
         count: int,
     ) -> list[dict[str, Any]]:
         """Sample fields independently (no correlation structure)."""
-        samples: dict[str, np.ndarray] = {}
+        samples: dict[str, NDArray[Any]] = {}
         target_types: dict[str, type] = {}
         constraints_map: dict[str, dict[str, float | None]] = {}
 
@@ -159,7 +160,7 @@ class DistributionSampler:
         constraints_map: dict[str, dict[str, float | None]] = {
             name: c for name, (_, _, c) in distribution_specs.items()
         }
-        samples: dict[str, np.ndarray] = {}
+        samples: dict[str, NDArray[Any]] = {}
 
         # Partition fields into correlation-capable and independent
         corr_fields = [
@@ -232,10 +233,10 @@ class DistributionSampler:
     def _sample_copula(
         self,
         copula_type: str,
-        corr_matrix: np.ndarray,
+        corr_matrix: NDArray[Any],
         count: int,
         n_dims: int,
-    ) -> np.ndarray:
+    ) -> NDArray[Any]:
         """
         Sample from a copula, returning uniform [0,1] values.
 
@@ -256,8 +257,8 @@ class DistributionSampler:
             return self._sample_gaussian_copula(corr_matrix, count, n_dims)
 
     def _sample_gaussian_copula(
-        self, corr_matrix: np.ndarray, count: int, n_dims: int
-    ) -> np.ndarray:
+        self, corr_matrix: NDArray[Any], count: int, n_dims: int
+    ) -> NDArray[Any]:
         """
         Sample from Gaussian copula.
 
@@ -268,8 +269,8 @@ class DistributionSampler:
         return np.asarray(stats.norm.cdf(z_samples))
 
     def _sample_student_t_copula(
-        self, corr_matrix: np.ndarray, count: int, n_dims: int, df: int = 4
-    ) -> np.ndarray:
+        self, corr_matrix: NDArray[Any], count: int, n_dims: int, df: int = 4
+    ) -> NDArray[Any]:
         """
         Sample from Student's t copula.
 
@@ -291,8 +292,8 @@ class DistributionSampler:
         return np.asarray(stats.t.cdf(t_samples, df=df))
 
     def _sample_clayton_copula(
-        self, corr_matrix: np.ndarray, count: int, n_dims: int
-    ) -> np.ndarray:
+        self, corr_matrix: NDArray[Any], count: int, n_dims: int
+    ) -> NDArray[Any]:
         """
         Sample from a Clayton copula (lower tail dependence).
 
@@ -323,8 +324,8 @@ class DistributionSampler:
         return (1.0 + e / v[:, np.newaxis]) ** (-1.0 / theta)
 
     def _sample_gumbel_copula(
-        self, corr_matrix: np.ndarray, count: int, n_dims: int
-    ) -> np.ndarray:
+        self, corr_matrix: NDArray[Any], count: int, n_dims: int
+    ) -> NDArray[Any]:
         """
         Sample from a Gumbel copula (upper tail dependence).
 
@@ -356,8 +357,8 @@ class DistributionSampler:
         return np.asarray(np.exp(-((e / v[:, np.newaxis]) ** alpha)))
 
     def _sample_frank_copula(
-        self, corr_matrix: np.ndarray, count: int, n_dims: int
-    ) -> np.ndarray:
+        self, corr_matrix: NDArray[Any], count: int, n_dims: int
+    ) -> NDArray[Any]:
         """
         Sample from a Frank copula (symmetric, no tail dependence).
 
@@ -391,14 +392,14 @@ class DistributionSampler:
         # U_i = phi(E_i / V) with phi(t) = -1/theta * log(1 - (1 - e^-theta) e^-t)
         return np.asarray(-1.0 / theta * np.log1p(-p * np.exp(-e / v[:, np.newaxis])))
 
-    def _average_offdiagonal(self, corr_matrix: np.ndarray, n_dims: int) -> float:
+    def _average_offdiagonal(self, corr_matrix: NDArray[Any], n_dims: int) -> float:
         """Average of the off-diagonal correlation entries (signed)."""
         if n_dims < 2:
             return 0.0
         off_sum = corr_matrix.sum() - np.trace(corr_matrix)
         return float(off_sum / (n_dims * (n_dims - 1)))
 
-    def _sample_positive_stable(self, alpha: float, count: int) -> np.ndarray:
+    def _sample_positive_stable(self, alpha: float, count: int) -> NDArray[Any]:
         """
         Sample a positive stable variable with Laplace transform exp(-t^alpha).
 
@@ -443,8 +444,8 @@ class DistributionSampler:
             return max(tau * 10.0, 0.1)
 
     def _ensure_positive_semidefinite(
-        self, matrix: np.ndarray, epsilon: float = 1e-6
-    ) -> np.ndarray:
+        self, matrix: NDArray[Any], epsilon: float = 1e-6
+    ) -> NDArray[Any]:
         """Ensure a correlation matrix is positive semi-definite."""
         eigenvalues, eigenvectors = np.linalg.eigh(matrix)
         eigenvalues = np.maximum(eigenvalues, epsilon)
