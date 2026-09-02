@@ -21,9 +21,9 @@ from gendantic import (
     Normal,
     Poisson,
     Uniform,
+    generate_model_from_description,
     generate_synthetic_data,
     generate_synthetic_data_batch,
-    generate_model_from_description,
 )
 
 
@@ -139,7 +139,9 @@ async def demo_dynamic_model():
     - A description of the issue
     """
 
-    Model, source_code = await generate_model_from_description(description, model_name="SupportTicket")
+    Model, source_code = await generate_model_from_description(
+        description, model_name="SupportTicket"
+    )
 
     print("Generated model code:")
     print("-" * 40)

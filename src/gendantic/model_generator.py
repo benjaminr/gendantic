@@ -9,8 +9,6 @@ to ensure only safe constructs (class definitions, type annotations) are used.
 """
 
 import ast
-import inspect
-import textwrap
 from typing import Any
 
 from pydantic import BaseModel
@@ -100,7 +98,6 @@ async def extend_model_with_correlations(
         # ExtendedEmployee now has __correlations__ with suggested
         # correlations between age, experience, and salary
     """
-    from .distributions import DistributionSpec
     from .llm_driven_analyser import LLMDrivenModelAnalyser
 
     # Extract distribution specs from the model
@@ -128,9 +125,7 @@ async def extend_model_with_correlations(
     )
 
     # Get correlation suggestions from LLM
-    correlations = await _get_correlations_from_llm(
-        model_code, dist_fields_info
-    )
+    correlations = await _get_correlations_from_llm(model_code, dist_fields_info)
 
     # Generate extended model code with correlations
     extended_code = _generate_extended_model_code(model_class, model_code, correlations)
@@ -217,8 +212,13 @@ def _get_basic_model_source_repr(model_class: type[BaseModel]) -> str:
                     break
 
         if constraints:
-            lines.append(f"    {field_name}: {type_str} = Field({', '.join(constraints)})")
-        elif field_info.default is not PydanticUndefined and field_info.default is not ...:
+            lines.append(
+                f"    {field_name}: {type_str} = Field({', '.join(constraints)})"
+            )
+        elif (
+            field_info.default is not PydanticUndefined
+            and field_info.default is not ...
+        ):
             lines.append(f"    {field_name}: {type_str} = {field_info.default!r}")
         else:
             lines.append(f"    {field_name}: {type_str}")
@@ -252,7 +252,7 @@ async def _get_distribution_code_from_llm(
             count=1,
         )
         response = result[0] if isinstance(result, list) else result
-        return response.get("code", "")
+        return str(response.get("code", ""))
     except Exception as e:
         raise ValueError(f"Failed to generate model with distributions: {e}") from e
 
@@ -321,7 +321,7 @@ def _type_to_string(t: Any) -> str:
         return origin_name
 
     if hasattr(t, "__name__"):
-        return t.__name__
+        return str(t.__name__)
 
     return str(t)
 
@@ -366,7 +366,7 @@ async def _get_correlations_from_llm(
             count=1,
         )
         response = result[0] if isinstance(result, list) else result
-        return response.get("correlations", [])
+        return list(response.get("correlations", []))
     except Exception as e:
         raise ValueError(f"Failed to get correlation suggestions: {e}") from e
 
@@ -445,7 +445,7 @@ async def _get_model_code_from_llm(
             count=1,
         )
         response = result[0] if isinstance(result, list) else result
-        return response.get("code", "")
+        return str(response.get("code", ""))
     except Exception as e:
         raise ValueError(f"Failed to generate model code: {e}") from e
 

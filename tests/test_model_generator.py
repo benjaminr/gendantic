@@ -247,6 +247,7 @@ class Employee(BaseModel):
         assert Model.__name__ == "Employee"
         assert hasattr(Model, "__correlations__")
         from gendantic import Correlations
+
         assert isinstance(Model.__correlations__, Correlations)
 
 
@@ -265,7 +266,7 @@ class TestExtendModelHelpers:
         """Test converting Annotated types to strings."""
         from typing import Annotated
 
-        from gendantic import Normal, Uniform
+        from gendantic import Normal
         from gendantic.model_generator import _annotation_to_string
 
         ann = Annotated[int, Normal(mean=50000, std=15000)]
@@ -286,11 +287,15 @@ class TestExtendModelHelpers:
 
         class TestEmployee(BaseModel):
             """An employee."""
+
             age: Annotated[int, Uniform(min=22, max=65)]
             salary: Annotated[float, Normal(mean=75000, std=20000)]
             name: str
 
-        dist_specs = {"age": Uniform(min=22, max=65), "salary": Normal(mean=75000, std=20000)}
+        dist_specs = {
+            "age": Uniform(min=22, max=65),
+            "salary": Normal(mean=75000, std=20000),
+        }
         source = _get_model_source_repr(TestEmployee, dist_specs)
 
         assert "class TestEmployee(BaseModel)" in source
@@ -318,7 +323,7 @@ class TestExtendModelHelpers:
         extended = _generate_extended_model_code(TestModel, model_code, correlations)
 
         assert "__correlations__" in extended
-        assert 'Correlations(' in extended
+        assert "Correlations(" in extended
         assert '"age"' in extended
         assert '"salary"' in extended
         assert "0.5" in extended
@@ -337,7 +342,12 @@ class TestExtendModelHelpers:
     bonus: Annotated[float, Normal(mean=5000, std=2000)]"""
 
         correlations = [
-            {"field1": "performance", "field2": "bonus", "correlation": 0.7, "copula_type": "gumbel"},
+            {
+                "field1": "performance",
+                "field2": "bonus",
+                "correlation": 0.7,
+                "copula_type": "gumbel",
+            },
         ]
 
         extended = _generate_extended_model_code(TestModel, model_code, correlations)
