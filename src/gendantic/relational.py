@@ -82,14 +82,18 @@ class ForeignKey:
     integrity.
 
     Args:
-        model: The referenced Pydantic model class (must also be generated).
+        model: The referenced Pydantic model class (must also be generated), or
+            its class name as a string. Use a string forward reference for
+            self-references or mutual references, where the class isn't yet
+            defined in its own body — e.g. ``ForeignKey("Employee")`` for a
+            ``manager_id`` on ``Employee``.
         field: Name of the referenced primary-key field. Defaults to the
             referenced model's ``PrimaryKey`` field.
         nullable: If True, some values are left as ``None``.
         null_probability: Fraction of values set to ``None`` when ``nullable``.
     """
 
-    model: type[BaseModel]
+    model: type[BaseModel] | str
     field: str | None = None
     nullable: bool = False
     null_probability: float = 0.1
@@ -159,6 +163,34 @@ def extract_foreign_keys(model_class: type[BaseModel]) -> dict[str, ForeignKey]:
     return foreign_keys
 
 
+def _resolve_fk_model(
+    fk: ForeignKey,
+    referrer: type[BaseModel],
+    fk_field: str,
+    by_name: dict[str, type[BaseModel]],
+) -> type[BaseModel]:
+    """Resolve a foreign key's target to a model class in the dataset.
+
+    Accepts either a class or a string forward reference (the target's class
+    name). Raises ValueError if the target isn't part of the dataset.
+    """
+    target = fk.model
+    if isinstance(target, str):
+        resolved = by_name.get(target)
+        if resolved is None:
+            raise ValueError(
+                f"{referrer.__name__}.{fk_field} references {target!r}, "
+                f"which is not included in the dataset. Add it with a count."
+            )
+        return resolved
+    if target not in by_name.values():
+        raise ValueError(
+            f"{referrer.__name__}.{fk_field} references {target.__name__}, "
+            f"which is not included in the dataset. Add it with a count."
+        )
+    return target
+
+
 def _resolve_generation_order(
     models: list[type[BaseModel]],
 ) -> list[type[BaseModel]]:
@@ -167,20 +199,16 @@ def _resolve_generation_order(
     Raises ValueError on a cyclic foreign-key dependency, or if a foreign key
     references a model that is not being generated.
     """
-    model_set = set(models)
+    by_name = {m.__name__: m for m in models}
     # edges: parent -> {children}; in_degree counts unresolved parents per model
     dependencies: dict[type[BaseModel], set[type[BaseModel]]] = {
         m: set() for m in models
     }
     for model in models:
-        for fk in extract_foreign_keys(model).values():
-            if fk.model not in model_set:
-                raise ValueError(
-                    f"{model.__name__} has a foreign key to {fk.model.__name__}, "
-                    f"which is not included in the dataset. Add it with a count."
-                )
-            if fk.model is not model:
-                dependencies[model].add(fk.model)
+        for fk_field, fk in extract_foreign_keys(model).items():
+            target = _resolve_fk_model(fk, model, fk_field, by_name)
+            if target is not model:
+                dependencies[model].add(target)
 
     order: list[type[BaseModel]] = []
     resolved: set[type[BaseModel]] = set()
@@ -216,6 +244,41 @@ def _assign_foreign_keys(
             row[fk_field] = parent_pool[int(rng.integers(len(parent_pool)))]
 
 
+def _attach_relational_context(
+    relational_context: list[dict[str, Any]],
+    prefilled: list[dict[str, Any]],
+    fk_field: str,
+    parent_pk_field: str,
+    parent_pk_pool: list[Any],
+    parent_rows: list[BaseModel],
+) -> None:
+    """Fold each referenced parent row's attributes into per-row LLM context.
+
+    For every child row, looks up the parent row its foreign key points at and
+    records that parent's attributes (minus the parent's own primary key) under
+    a readable key (the foreign-key field name without a trailing ``_id``). This
+    lets the LLM generate text coherent with the actual related row rather than
+    an opaque key value. Skipped for ``None`` foreign keys.
+    """
+    if not parent_rows:
+        return
+    parent_by_pk = dict(zip(parent_pk_pool, parent_rows, strict=True))
+    key = fk_field[:-3] if fk_field.endswith("_id") else fk_field
+    for row, ctx in zip(prefilled, relational_context, strict=True):
+        fk_value = row.get(fk_field)
+        if fk_value is None:
+            continue
+        parent = parent_by_pk.get(fk_value)
+        if parent is None:
+            continue
+        attributes = {
+            name: value
+            for name, value in parent.model_dump().items()
+            if name != parent_pk_field
+        }
+        ctx[key] = attributes
+
+
 async def generate_dataset(
     counts: dict[type[BaseModel], int],
     *,
@@ -240,6 +303,7 @@ async def generate_dataset(
     from .generator import _generate_with_distribution_sampling
 
     order = _resolve_generation_order(list(counts))
+    by_name = {m.__name__: m for m in counts}
     key_rng = np.random.default_rng(seed)
 
     pk_pools: dict[type[BaseModel], list[Any]] = {}
@@ -248,6 +312,7 @@ async def generate_dataset(
     for idx, model in enumerate(order):
         count = counts[model]
         prefilled: list[dict[str, Any]] = [{} for _ in range(count)]
+        relational_context: list[dict[str, Any]] = [{} for _ in range(count)]
 
         # Primary key: generate unique values and record the pool for children.
         pk_info = extract_primary_key(model)
@@ -260,23 +325,37 @@ async def generate_dataset(
 
         # Foreign keys: draw from the referenced model's primary-key pool.
         for fk_field, fk in extract_foreign_keys(model).items():
-            parent_pk = extract_primary_key(fk.model)
+            target = _resolve_fk_model(fk, model, fk_field, by_name)
+            parent_pk = extract_primary_key(target)
             if parent_pk is None:
                 raise ValueError(
-                    f"{model.__name__}.{fk_field} references {fk.model.__name__}, "
+                    f"{model.__name__}.{fk_field} references {target.__name__}, "
                     f"which has no PrimaryKey field."
                 )
             if fk.field is not None and fk.field != parent_pk[0]:
                 raise ValueError(
                     f"{model.__name__}.{fk_field} references "
-                    f"{fk.model.__name__}.{fk.field}, but foreign keys must "
-                    f"reference the primary key ({fk.model.__name__}.{parent_pk[0]})."
+                    f"{target.__name__}.{fk.field}, but foreign keys must "
+                    f"reference the primary key ({target.__name__}.{parent_pk[0]})."
                 )
-            _assign_foreign_keys(prefilled, fk_field, fk, pk_pools[fk.model], key_rng)
+            _assign_foreign_keys(prefilled, fk_field, fk, pk_pools[target], key_rng)
+            _attach_relational_context(
+                relational_context,
+                prefilled,
+                fk_field,
+                parent_pk[0],
+                pk_pools.get(target, []),
+                tables.get(target, []),
+            )
 
         model_seed = None if seed is None else seed + idx + 1
         tables[model] = await _generate_with_distribution_sampling(
-            model, count, context, model_seed, prefilled=prefilled
+            model,
+            count,
+            context,
+            model_seed,
+            prefilled=prefilled,
+            relational_context=relational_context,
         )
 
     return Dataset(tables)

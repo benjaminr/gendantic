@@ -125,6 +125,44 @@ async def test_primary_keys_not_asked_of_llm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_foreign_key_context_passed_to_llm() -> None:
+    """A child's LLM prompt includes the attributes of its referenced parent."""
+
+    class Review(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+        customer_id: Annotated[int, ForeignKey(Customer)]
+        comment: str  # LLM-generated -> triggers a prompt carrying FK context
+
+    prompts: list[str] = []
+
+    def gen(
+        schema: dict[str, Any], prompt: str, count: int = 1
+    ) -> list[dict[str, Any]]:
+        if _is_analysis_call(schema):
+            return [_ANALYSIS]
+        prompts.append(prompt)
+        props = list(schema["items"]["properties"].keys())
+        return [{p: f"{p}-{i}" for p in props} for i in range(count)]
+
+    client = AsyncMock()
+    client.generate_structured = AsyncMock(side_effect=gen)
+    with patch_clients(client):
+        await generate_dataset({Customer: 3, Review: 5}, seed=1)
+
+    # The Review prompt (generating 'comment') should carry its referenced
+    # customer's data under a "related_records.customer" block.
+    review_prompts = [p for p in prompts if "Review model" in p]
+    assert review_prompts
+    assert all('"related_records":' in p for p in review_prompts)
+    assert all('"customer":' in p for p in review_prompts)
+    # The parent Customer prompt has no foreign keys, so no related_records data
+    # is folded into its partial records (the JSON key is absent).
+    customer_prompts = [p for p in prompts if "Customer model" in p]
+    assert customer_prompts
+    assert all('"related_records":' not in p for p in customer_prompts)
+
+
+@pytest.mark.asyncio
 async def test_uuid_primary_key_strategy() -> None:
     class Doc(BaseModel):
         id: Annotated[str, PrimaryKey(strategy="uuid")]
@@ -136,6 +174,25 @@ async def test_uuid_primary_key_strategy() -> None:
     ids = [d.id for d in dataset[Doc]]
     assert len(set(ids)) == 5
     assert all(isinstance(i, str) and len(i) == 32 for i in ids)
+
+
+def test_self_reference_via_string_forward_ref() -> None:
+    """A model can reference itself using a string forward reference."""
+
+    class Employee(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+        manager_id: Annotated[
+            int | None, ForeignKey("Employee", nullable=True, null_probability=0.3)
+        ] = None
+
+    with patch_clients(make_fake_client()):
+        dataset = generate_dataset_sync({Employee: 15}, seed=4)
+
+    employees = dataset[Employee]
+    ids = {e.id for e in employees}
+    managers = [e.manager_id for e in employees]
+    assert any(m is None for m in managers)  # at least one top-level employee
+    assert all(m in ids for m in managers if m is not None)  # valid references
 
 
 @pytest.mark.asyncio

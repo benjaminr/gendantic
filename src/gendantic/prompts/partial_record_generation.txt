@@ -7,11 +7,18 @@ You must generate ONLY the missing fields: {fields_to_generate}
 1. DO NOT modify or override the pre-filled values - they are fixed
 2. Use the pre-filled values as CONTEXT when generating missing fields
 3. Generated fields should be COHERENT with the pre-filled values
+4. If a record includes a "related_records" object, it describes the actual rows
+   this record's foreign keys point at (e.g. the referenced product or customer).
+   Take those related rows into account so generated values are consistent with
+   what they represent. "related_records" is context only - never output it as a
+   field.
 
 For example:
 - If age=58, bio might mention "senior" or "experienced"
 - If department="Engineering", job_title should be technical
 - If salary=120000, suggests a senior role
+- If related_records.product represents a kitchen item, a review should make
+  sense as feedback about that product
 
 **MANDATORY VALIDATION REQUIREMENTS**:
 {critical_requirements}
