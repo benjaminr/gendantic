@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import json
+import logging
 import re
 from typing import Any, List
 
@@ -11,6 +12,8 @@ from .llm import get_client
 from .llm_driven_analyser import LLMDrivenModelAnalyser
 from .prompts import load_prompt
 from .sampler import DistributionSampler
+
+logger = logging.getLogger("gendantic")
 
 
 async def generate_synthetic_data(
@@ -62,9 +65,7 @@ async def generate_synthetic_data(
 
     if context == "general":
         context = f"Modern business using {model_class.__name__} data model"
-    return await _generate_with_distribution_sampling(
-        model_class, count, context, seed
-    )
+    return await _generate_with_distribution_sampling(model_class, count, context, seed)
 
 
 async def generate_synthetic_data_batch(
@@ -116,14 +117,18 @@ async def _generate_with_distribution_sampling(
     If no distribution specs are found, falls back to full LLM generation.
     """
     # 1. Extract distribution specs from Annotated types (with type info for proper casting)
-    dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(model_class)
+    dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
+        model_class
+    )
 
     # 2. Extract correlations from model (if defined)
     correlations = _extract_correlations(model_class)
 
     # 3. Sample distribution fields with numpy (using correlations if present)
     sampler = DistributionSampler(seed=seed)
-    partial_records = sampler.sample_fields(dist_specs, count, correlations=correlations)
+    partial_records = sampler.sample_fields(
+        dist_specs, count, correlations=correlations
+    )
 
     # 3. Identify fields that need LLM generation
     all_fields = set(model_class.model_fields.keys())
@@ -164,7 +169,7 @@ async def _generate_remaining_fields(
     Uses batching to avoid LLM output token limits for large record counts.
     """
     # Get LLM analysis for context (only once)
-    analysis = LLMDrivenModelAnalyser.analyse_model_for_generation(
+    analysis = await LLMDrivenModelAnalyser.analyse_model_for_generation(
         model_class, context=context, count=len(partial_records)
     )
 
@@ -240,6 +245,11 @@ def _merge_records(
     """
     if len(generated) > len(sampled):
         # LLM generated extra records - truncate to match
+        logger.warning(
+            "LLM generated %d records but only %d were requested; truncating extras.",
+            len(generated),
+            len(sampled),
+        )
         generated = generated[: len(sampled)]
     elif len(generated) < len(sampled):
         raise ValueError(
@@ -256,16 +266,28 @@ def _validate_and_convert(
     """Validate and convert raw data to model instances."""
 
     validated_data = []
+    failures = 0
     for item in raw_data:
         try:
             instance = model_class(**item)
             validated_data.append(instance)
         except ValidationError as e:
-            print(f"Validation error for item {item}: {e}")
+            failures += 1
+            logger.debug("Validation error for item %r: %s", item, e)
             continue
 
     if not validated_data:
         raise ValueError("No valid data was generated")
+
+    if failures:
+        logger.warning(
+            "%d of %d generated %s record(s) failed validation and were dropped; "
+            "returning %d valid record(s).",
+            failures,
+            len(raw_data),
+            model_class.__name__,
+            len(validated_data),
+        )
 
     return validated_data
 
