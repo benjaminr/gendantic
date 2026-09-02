@@ -29,6 +29,26 @@ async def main():
 asyncio.run(main())
 ```
 
+### Synchronous usage
+
+If you're not managing an event loop (scripts, REPLs, notebooks outside async
+cells), use the `*_sync` wrappers:
+
+```python
+from gendantic import generate_synthetic_data_sync
+
+employees = generate_synthetic_data_sync(Employee, count=100, seed=42)
+```
+
+### Exporting to a DataFrame
+
+```python
+from gendantic import generate_synthetic_data_sync, to_dataframe
+
+employees = generate_synthetic_data_sync(Employee, count=100, seed=42)
+df = to_dataframe(employees)  # requires the `pandas` extra
+```
+
 ## Features
 
 - **Statistical Distributions**: Use `Annotated` types with numpy-backed distributions for guaranteed statistical compliance
@@ -37,8 +57,9 @@ asyncio.run(main())
 - **Dynamic Model Generation**: Let the LLM design your Pydantic model from a natural language description
 - **Smart Distribution & Correlation Suggestions**: Use `extend_model_with_distributions()` and `extend_model_with_correlations()` to let the LLM suggest appropriate distributions, correlations, and copula types
 - **Reproducible**: Set a seed for deterministic distribution sampling
-- **Async-First**: High-performance async API with batch generation support
-- **Multi-Provider**: Support for OpenAI and Anthropic models
+- **Async-First (with sync wrappers)**: High-performance async API with batch generation, plus `*_sync` helpers for scripts and REPLs
+- **DataFrame Export**: Turn generated records into a pandas DataFrame with `to_dataframe()`
+- **Provider-Agnostic**: Connects through a [LiteLLM](https://docs.litellm.ai/) proxy, giving access to any model LiteLLM supports (OpenAI, Anthropic, Azure, Bedrock, local models, and more)
 
 ## Installation
 
@@ -50,6 +71,12 @@ Or with uv:
 
 ```bash
 uv add gendantic
+```
+
+For DataFrame export, install the optional `pandas` extra:
+
+```bash
+pip install 'gendantic[pandas]'
 ```
 
 ## Statistical Distributions

@@ -11,7 +11,13 @@ from .distributions import (
     Poisson,
     Uniform,
 )
-from .generator import generate_synthetic_data, generate_synthetic_data_batch
+from .export import to_dataframe
+from .generator import (
+    generate_synthetic_data,
+    generate_synthetic_data_batch,
+    generate_synthetic_data_batch_sync,
+    generate_synthetic_data_sync,
+)
 from .llm_driven_analyser import LLMDrivenModelAnalyser
 from .model_generator import (
     CodeValidationError,
@@ -25,9 +31,13 @@ __all__ = [
     # Generation
     "generate_synthetic_data",
     "generate_synthetic_data_batch",
+    "generate_synthetic_data_sync",
+    "generate_synthetic_data_batch_sync",
     "generate_model_from_description",
     "extend_model_with_distributions",
     "extend_model_with_correlations",
+    # Export
+    "to_dataframe",
     # Distribution specs
     "DistributionSpec",
     "Normal",

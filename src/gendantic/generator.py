@@ -3,7 +3,8 @@ import inspect
 import json
 import logging
 import re
-from typing import Any, List
+from collections.abc import Coroutine
+from typing import Any, List, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -14,6 +15,27 @@ from .prompts import load_prompt
 from .sampler import DistributionSampler
 
 logger = logging.getLogger("gendantic")
+
+_T = TypeVar("_T")
+
+
+def _run_coro(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Run an async coroutine from synchronous code.
+
+    Raises a clear error if called from within an already-running event loop
+    (e.g. a Jupyter cell), where the caller should await the async API instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    coro.close()
+    raise RuntimeError(
+        "A synchronous gendantic function was called from inside a running "
+        "event loop. Use the async API instead (e.g. "
+        "`await generate_synthetic_data(...)`)."
+    )
 
 
 async def generate_synthetic_data(
@@ -97,6 +119,40 @@ async def generate_synthetic_data_batch(
         for context in contexts
     ]
     return await asyncio.gather(*tasks)
+
+
+def generate_synthetic_data_sync(
+    model_class: type[BaseModel],
+    count: int = 10,
+    *,
+    context: str = "general",
+    seed: int | None = None,
+) -> list[BaseModel]:
+    """Synchronous wrapper around :func:`generate_synthetic_data`.
+
+    Convenient for scripts and REPL use where you don't want to manage an event
+    loop. Must not be called from within a running event loop (await the async
+    version there instead).
+
+    Examples:
+        employees = generate_synthetic_data_sync(Employee, count=100, seed=42)
+    """
+    return _run_coro(
+        generate_synthetic_data(model_class, count, context=context, seed=seed)
+    )
+
+
+def generate_synthetic_data_batch_sync(
+    model_class: type[BaseModel],
+    contexts: List[str],
+    count: int = 10,
+    *,
+    seed: int | None = None,
+) -> List[list[BaseModel]]:
+    """Synchronous wrapper around :func:`generate_synthetic_data_batch`."""
+    return _run_coro(
+        generate_synthetic_data_batch(model_class, contexts, count=count, seed=seed)
+    )
 
 
 async def _generate_with_distribution_sampling(

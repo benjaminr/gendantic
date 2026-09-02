@@ -60,6 +60,9 @@ notebooks = [
     "ipykernel>=6.0.0",
     "matplotlib>=3.7.0",
 ]
+pandas = [
+    "pandas>=2.0.0",
+]
 
 [tool.setuptools.package-data]
 gendantic = ["prompts/*.txt"]
