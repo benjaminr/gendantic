@@ -52,7 +52,9 @@ def test_mixed_copula_types_are_honoured_per_pair() -> None:
     records = sampler.sample_fields(
         specs,
         6000,
-        correlations=Correlations(("a", "b", 0.6, "clayton"), ("a", "c", 0.6, "gumbel")),
+        correlations=Correlations(
+            ("a", "b", 0.6, "clayton"), ("a", "c", 0.6, "gumbel")
+        ),
     )
     assert _corr(records, "a", "b") > 0.4
     assert _corr(records, "a", "c") > 0.4

@@ -81,8 +81,12 @@ def test_marginals_preserved_uniform_on_copula_scale() -> None:
 
 def test_sampling_is_deterministic_under_seed() -> None:
     corr = Correlations(("a", "b", 0.6, "gumbel"), ("b", "c", 0.5, "frank"))
-    r1 = DistributionSampler(seed=11).sample_fields(_specs("a", "b", "c"), 200, correlations=corr)
-    r2 = DistributionSampler(seed=11).sample_fields(_specs("a", "b", "c"), 200, correlations=corr)
+    r1 = DistributionSampler(seed=11).sample_fields(
+        _specs("a", "b", "c"), 200, correlations=corr
+    )
+    r2 = DistributionSampler(seed=11).sample_fields(
+        _specs("a", "b", "c"), 200, correlations=corr
+    )
     assert r1 == r2
 
 

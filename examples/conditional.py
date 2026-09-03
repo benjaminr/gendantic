@@ -118,12 +118,12 @@ def demo_ordering() -> None:
 
     # The invariant holds for every record.
     violations = sum(
-        1
-        for p in projects
-        if not (p.kickoff_day <= p.review_day <= p.deadline_day)
+        1 for p in projects if not (p.kickoff_day <= p.review_day <= p.deadline_day)
     )
-    print(f"\nOrdering kickoff <= review <= deadline: {violations} violations "
-          f"/ {len(projects)}")
+    print(
+        f"\nOrdering kickoff <= review <= deadline: {violations} violations "
+        f"/ {len(projects)}"
+    )
 
     # Trade-off: the sort reassigns which field gets which value, so each
     # constrained field's marginal becomes an order statistic. The three fields
@@ -157,12 +157,12 @@ def demo_resample_ordering() -> None:
     careers = generate_synthetic_data_sync(Career, count=2000, seed=11)
 
     violations = sum(
-        1
-        for c in careers
-        if not (c.birth_year <= c.hire_year <= c.exit_year)
+        1 for c in careers if not (c.birth_year <= c.hire_year <= c.exit_year)
     )
-    print(f"\nResample ordering birth <= hire <= exit: {violations} violations "
-          f"/ {len(careers)}")
+    print(
+        f"\nResample ordering birth <= hire <= exit: {violations} violations "
+        f"/ {len(careers)}"
+    )
 
     # Each field's mean stays at its own distribution's midpoint (1975 / 2000 /
     # 2017), because resample preserves marginals rather than reshaping them.
