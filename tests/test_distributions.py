@@ -214,16 +214,6 @@ class TestDistributionSampler:
         assert len(records) == 5
         assert all(r == {} for r in records)
 
-    def test_sample_single_field(self):
-        """Test sampling a single field directly."""
-        sampler = DistributionSampler(seed=42)
-        values = sampler.sample_single_field(Uniform(min=0, max=100), count=50)
-
-        assert len(values) == 50
-        assert all(isinstance(v, float) for v in values)
-        assert all(0 <= v < 100 for v in values)
-
-
 class TestDistributionExtraction:
     """Test extraction of distribution specs from Pydantic models."""
 

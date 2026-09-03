@@ -150,9 +150,9 @@ class DistributionSampler:
         fields are drawn through the copula. Correlation specs that reference
         an unsupported field are ignored with a warning.
 
-        For simplicity and consistency, we use the dominant copula type
-        for the entire correlation structure. If mixed copulas are specified,
-        we use Gaussian for the overall structure but apply tail adjustments.
+        For simplicity and consistency, a single dominant copula type is used
+        for the whole correlation structure; when specs mix copula types,
+        Gaussian is used as the base.
         """
         target_types: dict[str, type] = {
             name: t for name, (_, t, _) in distribution_specs.items()
@@ -181,8 +181,7 @@ class DistributionSampler:
             )
 
         # Independent fields: sample directly from their marginal
-        for name in indep_fields:
-            samples[name] = distribution_specs[name][0].sample(count, self.rng)
+        samples.update(self._sample_marginals(distribution_specs, indep_fields, count))
 
         # Determine whether any real correlations remain among capable fields
         corr_matrix = correlations.build_correlation_matrix(corr_fields)
@@ -192,8 +191,9 @@ class DistributionSampler:
 
         if not has_correlation:
             # Nothing left to correlate - sample capable fields independently too
-            for name in corr_fields:
-                samples[name] = distribution_specs[name][0].sample(count, self.rng)
+            samples.update(
+                self._sample_marginals(distribution_specs, corr_fields, count)
+            )
         else:
             # Determine dominant copula from specs among capable fields
             copula_groups = correlations.get_copula_groups()
@@ -211,8 +211,9 @@ class DistributionSampler:
                 )
             except Exception:
                 # Fall back to independent sampling for capable fields
-                for name in corr_fields:
-                    samples[name] = distribution_specs[name][0].sample(count, self.rng)
+                samples.update(
+                    self._sample_marginals(distribution_specs, corr_fields, count)
+                )
             else:
                 for i, name in enumerate(corr_fields):
                     u_col = np.clip(u_samples[:, i], 1e-10, 1 - 1e-10)
@@ -229,6 +230,23 @@ class DistributionSampler:
             }
             for i in range(count)
         ]
+
+    def _sample_marginals(
+        self,
+        distribution_specs: dict[
+            str, tuple[DistributionSpec, type, dict[str, float | None]]
+        ],
+        names: list[str],
+        count: int,
+    ) -> dict[str, NDArray[Any]]:
+        """Sample the named fields directly from their marginals (uncorrelated).
+
+        Iterating ``names`` in order keeps the RNG draw sequence deterministic.
+        """
+        return {
+            name: distribution_specs[name][0].sample(count, self.rng)
+            for name in names
+        }
 
     def _sample_copula(
         self,
@@ -552,12 +570,3 @@ class DistributionSampler:
             return int(round(result))
 
         return result
-
-    def sample_single_field(
-        self,
-        spec: DistributionSpec,
-        count: int,
-    ) -> list[Any]:
-        """Sample a single field's values."""
-        samples = spec.sample(count, self.rng)
-        return [self._convert_numpy_value(v) for v in samples]
