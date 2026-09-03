@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gendantic"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Generate synthetic data using Pydantic models and LLMs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -64,6 +64,14 @@ db = [
 
 [tool.setuptools.package-data]
 gendantic = ["prompts/*.txt", "py.typed"]
+
+# Version is derived from git tags (setuptools-scm): tag ``vX.Y.Z`` for a
+# release; commits after a tag get e.g. ``0.1.1.dev4+g<sha>`` automatically, so
+# the patch advances on its own while major/minor only move when we tag.
+# ``fallback_version`` keeps builds working when git history/tags are absent
+# (e.g. building from an unpacked sdist without a .git directory).
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
 
 [tool.ruff]
 target-version = "py310"
