@@ -98,8 +98,13 @@ def test_truncated_sample_matches_truncated_distribution() -> None:
 
 @pytest.mark.parametrize(
     "bounds",
-    [_bounds(ge=1.0), _bounds(le=3.0), _bounds(gt=0.0), _bounds(lt=5.0),
-     _bounds(ge=-2.0, le=2.0)],
+    [
+        _bounds(ge=1.0),
+        _bounds(le=3.0),
+        _bounds(gt=0.0),
+        _bounds(lt=5.0),
+        _bounds(ge=-2.0, le=2.0),
+    ],
 )
 def test_bounds_are_respected(bounds) -> None:
     specs = {"x": (Normal(mean=0.0, std=2.0), float, bounds)}

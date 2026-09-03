@@ -58,7 +58,10 @@ class DistributionSampler:
         self,
         distribution_specs: (
             dict[str, DistributionSpec | Conditional]
-            | dict[str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]]
+            | dict[
+                str,
+                tuple[DistributionSpec | Conditional, type, dict[str, float | None]],
+            ]
         ),
         count: int,
         correlations: Correlations | None = None,
@@ -159,7 +162,11 @@ class DistributionSampler:
                 name: self._convert_numpy_value(
                     samples[name][i], target_type, field_constraints
                 )
-                for name, (_, target_type, field_constraints) in normalised_specs.items()
+                for name, (
+                    _,
+                    target_type,
+                    field_constraints,
+                ) in normalised_specs.items()
             }
             for i in range(count)
         ]
@@ -253,7 +260,12 @@ class DistributionSampler:
         sequence deterministic. Each group's spec is truncated to the field's
         numeric bounds, matching the plain-field path.
         """
-        constraints = field_constraints or {"ge": None, "le": None, "gt": None, "lt": None}
+        constraints = field_constraints or {
+            "ge": None,
+            "le": None,
+            "gt": None,
+            "lt": None,
+        }
         result: NDArray[Any] = np.empty(count, dtype=object)
         group_indices: dict[int, list[int]] = {}
         group_specs: dict[int, DistributionSpec] = {}
@@ -343,7 +355,9 @@ class DistributionSampler:
         field_specs: dict[str, DistributionSpec] = {}
         for field_name in fields:
             spec = normalised_specs[field_name][0]
-            if not isinstance(spec, DistributionSpec):  # pragma: no cover - guarded above
+            if not isinstance(
+                spec, DistributionSpec
+            ):  # pragma: no cover - guarded above
                 raise ValueError(
                     f"Ordering(method='resample') field {field_name!r} has no "
                     f"independent distribution to resample from."
@@ -354,7 +368,8 @@ class DistributionSampler:
 
         def violating_mask() -> NDArray[np.bool_]:
             converted = [
-                self._converted_column(cols[f], *normalised_specs[f][1:]) for f in fields
+                self._converted_column(cols[f], *normalised_specs[f][1:])
+                for f in fields
             ]
             mask = np.zeros(len(converted[0]), dtype=bool)
             for lower, upper in zip(converted[:-1], converted[1:], strict=True):
@@ -476,13 +491,21 @@ class DistributionSampler:
             # Exact: the full matrix honours every Gaussian pair jointly.
             samples.update(
                 self._sample_full_matrix(
-                    CopulaType.GAUSSIAN, distribution_specs, corr_fields, corr_matrix, count
+                    CopulaType.GAUSSIAN,
+                    distribution_specs,
+                    corr_fields,
+                    corr_matrix,
+                    count,
                 )
             )
         elif families == {CopulaType.STUDENT_T}:
             samples.update(
                 self._sample_full_matrix(
-                    CopulaType.STUDENT_T, distribution_specs, corr_fields, corr_matrix, count
+                    CopulaType.STUDENT_T,
+                    distribution_specs,
+                    corr_fields,
+                    corr_matrix,
+                    count,
                 )
             )
         else:
@@ -570,8 +593,7 @@ class DistributionSampler:
         Iterating ``names`` in order keeps the RNG draw sequence deterministic.
         """
         return {
-            name: distribution_specs[name][0].sample(count, self.rng)
-            for name in names
+            name: distribution_specs[name][0].sample(count, self.rng) for name in names
         }
 
     def _sample_copula(

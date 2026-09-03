@@ -81,7 +81,9 @@ async def _run_and_measure_peak_concurrency(
 
 
 @pytest.mark.asyncio
-async def test_pipeline_merges_sampled_and_generated(make_client, patch_clients) -> None:
+async def test_pipeline_merges_sampled_and_generated(
+    make_client, patch_clients
+) -> None:
     """Distribution fields come from numpy; other fields from the LLM; merged."""
     client = make_client(
         lambda schema, prompt, count: [
@@ -102,7 +104,9 @@ async def test_pipeline_merges_sampled_and_generated(make_client, patch_clients)
 
 
 @pytest.mark.asyncio
-async def test_distribution_fields_are_not_asked_of_llm(make_client, patch_clients) -> None:
+async def test_distribution_fields_are_not_asked_of_llm(
+    make_client, patch_clients
+) -> None:
     """The LLM is only asked for non-distribution fields."""
     seen_field_schemas: list[list[str]] = []
 
@@ -201,7 +205,9 @@ async def test_explicit_argument_overrides_env_var(
 
 
 @pytest.mark.asyncio
-async def test_batch_shares_one_concurrency_budget_across_contexts(patch_clients) -> None:
+async def test_batch_shares_one_concurrency_budget_across_contexts(
+    patch_clients,
+) -> None:
     """All contexts in a batch share a single cap, not one semaphore each.
 
     With a per-context semaphore the true peak could reach
@@ -400,7 +406,9 @@ def test_make_schema_strict_enforces_strict_rules() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_model_from_description_mocked(make_client, patch_clients) -> None:
+async def test_generate_model_from_description_mocked(
+    make_client, patch_clients
+) -> None:
     """The dynamic model generator builds a working model from LLM code."""
     code = (
         "class Ticket(BaseModel):\n"

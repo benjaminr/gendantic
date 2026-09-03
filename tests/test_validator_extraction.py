@@ -39,7 +39,10 @@ def test_field_specific_validators_are_found() -> None:
     assert "acme.com" in validators[0]["description"]
 
     # A field with no validator returns nothing.
-    assert LLMDrivenModelAnalyser._extract_field_specific_validators("name", Employee) == []
+    assert (
+        LLMDrivenModelAnalyser._extract_field_specific_validators("name", Employee)
+        == []
+    )
 
 
 def test_extract_validators_info_covers_field_and_model_validators() -> None:

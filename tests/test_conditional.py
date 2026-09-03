@@ -161,12 +161,16 @@ def test_circular_dependency_raises() -> None:
     no_c = {"ge": None, "le": None, "gt": None, "lt": None}
     specs = {
         "a": (
-            Conditional(on="b", cases={Range(min=0): Normal(1, 1)}, default=Normal(0, 1)),
+            Conditional(
+                on="b", cases={Range(min=0): Normal(1, 1)}, default=Normal(0, 1)
+            ),
             float,
             no_c,
         ),
         "b": (
-            Conditional(on="a", cases={Range(min=0): Normal(1, 1)}, default=Normal(0, 1)),
+            Conditional(
+                on="a", cases={Range(min=0): Normal(1, 1)}, default=Normal(0, 1)
+            ),
             float,
             no_c,
         ),
@@ -264,7 +268,9 @@ def test_resample_ordering_holds_and_preserves_marginals() -> None:
     # method would instead pull them to order statistics.
     assert statistics.mean(r["birth"] for r in records) == pytest.approx(15, abs=1)
     assert statistics.mean(r["hire"] for r in records) == pytest.approx(45, abs=1)
-    assert statistics.mean(r["termination"] for r in records) == pytest.approx(80, abs=1)
+    assert statistics.mean(r["termination"] for r in records) == pytest.approx(
+        80, abs=1
+    )
 
 
 def test_resample_ordering_passes_fidelity_when_sort_would_not() -> None:

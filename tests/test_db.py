@@ -145,7 +145,9 @@ def test_round_trip_generate_and_load(make_client, patch_clients) -> None:
 
     with engine.connect() as conn:
         assert conn.execute(select(func.count()).select_from(customers)).scalar() == 8
-        assert conn.execute(select(func.count()).select_from(order_items)).scalar() == 20
+        assert (
+            conn.execute(select(func.count()).select_from(order_items)).scalar() == 20
+        )
 
         customer_ids = set(conn.execute(select(customers.c.id)).scalars())
         product_ids = set(conn.execute(select(products.c.id)).scalars())

@@ -6,6 +6,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Inherited fields are now honoured.** Distribution specs, `Conditional`,
+  `PrimaryKey` and `ForeignKey` markers declared on a parent model were
+  silently ignored on subclasses (the fields fell through to LLM generation and
+  keys went unassigned). Field introspection now reads Pydantic's
+  `model_fields`, which includes inherited fields.
+- **`from __future__ import annotations` no longer disables gendantic.** Under
+  postponed evaluation the class annotations are strings, so no markers were
+  found at all; the same `model_fields`-based introspection fixes this.
+- `Annotated[Optional[int], ...]` (and `Optional[Annotated[int, ...]]`)
+  distribution fields are now sampled and rounded as integers instead of
+  emitting floats that failed Pydantic validation on every record.
+- `fidelity_report` no longer raises on categorical fields. Weights that sum
+  only approximately to 1.0 (within `Categorical`'s tolerance) are renormalised
+  before the chi-square test, and a value outside the declared categories is
+  reported as a failed field rather than crashing scipy's chi-square.
+- LLM-generated enum and nested-model fields no longer produce dangling
+  `$ref`s: the model's `$defs` travel with the partial schema and are hoisted to
+  the root of the structured-output schema where the references resolve.
+- `extend_model_with_correlations` now works on models that use `Conditional`,
+  `Range`, `Constraints` or `Ordering`: those names are available (and
+  allow-listed) in the code sandbox, and the model source round-trip keeps
+  numeric `Field(ge=..., le=..., gt=..., lt=...)` bounds and field defaults,
+  which were previously dropped from the regenerated model.
+- `generate_synthetic_data` raises a clear `ValueError` for a negative `count`
+  instead of silently returning an empty list.
+
+### Added
+
+- `gendantic.__version__` (from installed package metadata).
+- `generate_dataset` / `generate_dataset_sync` accept `max_concurrency`, one
+  budget shared across every model in the dataset, matching the other entry
+  points.
+
+### Changed
+
+- The sdist no longer bundles notebooks, the lockfile, CI workflows or dotfiles
+  (`MANIFEST.in`); it shrinks from ~480 KB to ~145 KB.
+- CI (and the release gate) now run `ruff format --check`; the tree has been
+  reformatted so the check passes.
+- The model-analysis prompt no longer asks the LLM for a
+  `field_generation_strategies` block and non-existent distribution types that
+  the strict response schema could never carry.
+
 ## [0.1.0] - 2026-09-03
 
 Initial release.

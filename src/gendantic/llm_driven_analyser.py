@@ -1,10 +1,11 @@
 import json
 import logging
-from typing import Annotated, Any, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
+from ._fields import first_marker, iter_fields
 from .distributions import Conditional, DistributionSpec
 from .llm import get_client
 from .prompts import load_prompt
@@ -20,8 +21,9 @@ class LLMDrivenModelAnalyser:
         """
         Extract distribution specifications from Annotated type hints.
 
-        Scans the model's field annotations for DistributionSpec (and
-        Conditional) instances within Annotated types.
+        Scans the model's fields (including those inherited from parent
+        models) for DistributionSpec (and Conditional) instances within
+        Annotated types.
 
         Args:
             model_class: Pydantic model class to extract specs from
@@ -39,30 +41,27 @@ class LLMDrivenModelAnalyser:
             # Returns: {"salary": Normal(mean=50000, std=15000)}
         """
         specs: dict[str, DistributionSpec | Conditional] = {}
-
-        annotations = getattr(model_class, "__annotations__", {})
-        for field_name, annotation in annotations.items():
-            # Check if annotation is Annotated[T, ...]
-            if get_origin(annotation) is Annotated:
-                args = get_args(annotation)
-                # args[0] is the base type, rest are metadata
-                for arg in args[1:]:
-                    if isinstance(arg, DistributionSpec | Conditional):
-                        specs[field_name] = arg
-                        break  # Only one distribution per field
-
+        for field_name, _base_type, markers in iter_fields(model_class):
+            # Only one distribution per field: the first marker wins.
+            spec = first_marker(markers, (DistributionSpec, Conditional))
+            if spec is not None:
+                specs[field_name] = spec
         return specs
 
     @classmethod
     def extract_distribution_specs_with_types(
         cls, model_class: type[BaseModel]
-    ) -> dict[str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]]:
+    ) -> dict[
+        str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
+    ]:
         """
         Extract distribution specifications with their target types and constraints.
 
         Like extract_distribution_specs but also returns the base type
         (e.g., int or float) from the Annotated hint, and Field constraints
-        (ge, le, gt, lt) for clipping sampled values.
+        (ge, le, gt, lt) for clipping sampled values. An ``Optional`` wrapper
+        on the base type is stripped, so ``Annotated[Optional[int], ...]``
+        is sampled (and rounded) as an ``int``.
 
         Returns:
             Dict mapping field names to (spec, target_type, constraints) tuples,
@@ -73,39 +72,29 @@ class LLMDrivenModelAnalyser:
             str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
         ] = {}
 
-        annotations = getattr(model_class, "__annotations__", {})
-        model_fields = model_class.model_fields
-
-        for field_name, annotation in annotations.items():
-            if get_origin(annotation) is Annotated:
-                args = get_args(annotation)
-                base_type = args[0]  # The actual type (int, float, str, etc.)
-                for arg in args[1:]:
-                    if isinstance(arg, DistributionSpec | Conditional):
-                        # Extract Field constraints if present
-                        constraints: dict[str, float | None] = {
-                            "ge": None,
-                            "le": None,
-                            "gt": None,
-                            "lt": None,
-                        }
-                        if field_name in model_fields:
-                            field_info = model_fields[field_name]
-                            # Pydantic v2 stores constraints in metadata as Ge, Le, Gt, Lt objects
-                            for meta in field_info.metadata:
-                                # Check for constraint objects (Ge, Le, Gt, Lt)
-                                meta_type = type(meta).__name__
-                                if meta_type == "Ge" and hasattr(meta, "ge"):
-                                    constraints["ge"] = float(meta.ge)
-                                elif meta_type == "Le" and hasattr(meta, "le"):
-                                    constraints["le"] = float(meta.le)
-                                elif meta_type == "Gt" and hasattr(meta, "gt"):
-                                    constraints["gt"] = float(meta.gt)
-                                elif meta_type == "Lt" and hasattr(meta, "lt"):
-                                    constraints["lt"] = float(meta.lt)
-
-                        specs[field_name] = (arg, base_type, constraints)
-                        break
+        for field_name, base_type, markers in iter_fields(model_class):
+            spec = first_marker(markers, (DistributionSpec, Conditional))
+            if spec is None:
+                continue
+            # Pydantic v2 stores Field(ge=..., le=..., gt=..., lt=...) as
+            # annotated_types Ge/Le/Gt/Lt objects alongside our markers.
+            constraints: dict[str, float | None] = {
+                "ge": None,
+                "le": None,
+                "gt": None,
+                "lt": None,
+            }
+            for meta in markers:
+                meta_type = type(meta).__name__
+                if meta_type == "Ge" and hasattr(meta, "ge"):
+                    constraints["ge"] = float(meta.ge)
+                elif meta_type == "Le" and hasattr(meta, "le"):
+                    constraints["le"] = float(meta.le)
+                elif meta_type == "Gt" and hasattr(meta, "gt"):
+                    constraints["gt"] = float(meta.gt)
+                elif meta_type == "Lt" and hasattr(meta, "lt"):
+                    constraints["lt"] = float(meta.lt)
+            specs[field_name] = (spec, base_type, constraints)
 
         return specs
 
@@ -228,7 +217,10 @@ class LLMDrivenModelAnalyser:
 
         # Look for field validators that mention this field. Pydantic v2 records
         # them on __pydantic_decorators__, not as attributes on the class.
-        for name, decorator in model_class.__pydantic_decorators__.field_validators.items():
+        for (
+            name,
+            decorator,
+        ) in model_class.__pydantic_decorators__.field_validators.items():
             if field_name in decorator.info.fields:
                 field_validators.append(
                     {

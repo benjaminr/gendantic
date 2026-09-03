@@ -241,6 +241,7 @@ class TestDistributionSampler:
         with pytest.raises(ValueError, match="Unexpected tuple length"):
             sampler.sample_fields(bad_specs, count=5)  # type: ignore[arg-type]
 
+
 class TestDistributionExtraction:
     """Test extraction of distribution specs from Pydantic models."""
 

@@ -21,7 +21,9 @@ from gendantic import (
 from gendantic.relational import _resolve_generation_order
 
 
-def fake_values(schema: dict[str, Any], prompt: str, count: int) -> list[dict[str, Any]]:
+def fake_values(
+    schema: dict[str, Any], prompt: str, count: int
+) -> list[dict[str, Any]]:
     """Return LLM-field values for whatever properties the schema requests."""
     props = list(schema["items"]["properties"].keys())
     return [{p: f"{p}-{i}" for p in props} for i in range(count)]
@@ -95,7 +97,9 @@ async def test_relational_validation_failure_raises(make_client, patch_clients) 
         id: Annotated[int, PrimaryKey()]
         label: str = Field(min_length=3)  # LLM field with a constraint
 
-    def too_short(schema: dict[str, Any], prompt: str, count: int) -> list[dict[str, Any]]:
+    def too_short(
+        schema: dict[str, Any], prompt: str, count: int
+    ) -> list[dict[str, Any]]:
         return [{"label": "x"} for _ in range(count)]
 
     with patch_clients(make_client(too_short)):
@@ -204,15 +208,15 @@ async def test_missing_parent_raises(make_client, patch_clients) -> None:
 
 
 def test_cyclic_dependency_raises() -> None:
+    # A -> B via a string forward reference (B is not yet defined), B -> A
+    # directly: together they form a cycle no generation order can satisfy.
     class A(BaseModel):
         id: Annotated[int, PrimaryKey()]
+        b_id: Annotated[int, ForeignKey("B")]
 
     class B(BaseModel):
         id: Annotated[int, PrimaryKey()]
         a_id: Annotated[int, ForeignKey(A)]
-
-    # Introduce A -> B at the annotation level to form a cycle.
-    A.__annotations__["b_id"] = Annotated[int, ForeignKey(B)]
 
     with pytest.raises(ValueError, match="[Cc]yclic"):
         _resolve_generation_order([A, B])
@@ -235,9 +239,7 @@ async def test_composite_primary_key_join_table(make_client, patch_clients) -> N
         ]
 
     with patch_clients(make_client(fake_values)):
-        dataset = await generate_dataset(
-            {Customer: 5, Prod: 4, OrderItem: 12}, seed=1
-        )
+        dataset = await generate_dataset({Customer: 5, Prod: 4, OrderItem: 12}, seed=1)
 
     items = dataset[OrderItem]
     customer_ids = {c.id for c in dataset[Customer]}

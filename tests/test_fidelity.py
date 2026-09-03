@@ -193,7 +193,9 @@ def test_summary_is_printable_and_marks_status() -> None:
 
 
 class Conditioned(BaseModel):
-    department: Annotated[str, Categorical(weights={"Eng": 0.5, "Sales": 0.3, "HR": 0.2})]
+    department: Annotated[
+        str, Categorical(weights={"Eng": 0.5, "Sales": 0.3, "HR": 0.2})
+    ]
     salary: Annotated[
         float,
         Conditional(
@@ -252,7 +254,9 @@ def test_conditional_group_flags_wrong_data() -> None:
 
     report = fidelity_report(records, Conditioned)
     eng = next(
-        f for f in report.fields if f.field == "salary" and f.group == "department='Eng'"
+        f
+        for f in report.fields
+        if f.field == "salary" and f.group == "department='Eng'"
     )
     sales = next(
         f

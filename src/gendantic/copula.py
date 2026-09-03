@@ -114,7 +114,9 @@ def _h_gaussian(v: NDArray[Any], u: NDArray[Any], rho: float) -> NDArray[Any]:
     if abs(rho) < 1e-12:
         return v
     return np.asarray(
-        stats.norm.cdf((stats.norm.ppf(v) - rho * stats.norm.ppf(u)) / np.sqrt(1.0 - rho**2))
+        stats.norm.cdf(
+            (stats.norm.ppf(v) - rho * stats.norm.ppf(u)) / np.sqrt(1.0 - rho**2)
+        )
     )
 
 
@@ -149,7 +151,8 @@ def _h_clayton(v: NDArray[Any], u: NDArray[Any], theta: float) -> NDArray[Any]:
     if theta <= 1e-10:
         return v
     return np.asarray(
-        u ** (-theta - 1.0) * (u ** (-theta) + v ** (-theta) - 1.0) ** (-1.0 / theta - 1.0)
+        u ** (-theta - 1.0)
+        * (u ** (-theta) + v ** (-theta) - 1.0) ** (-1.0 / theta - 1.0)
     )
 
 

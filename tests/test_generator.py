@@ -44,7 +44,7 @@ async def test_generate_simple_model():
     try:
         users = await generate_synthetic_data(SimpleUser, count=3)
 
-        assert len(users) <= 3  # May be less due to validation failures
+        assert len(users) == 3  # exact count: invalid records are regenerated
         assert all(isinstance(user, SimpleUser) for user in users)
 
         for user in users:
