@@ -1241,7 +1241,6 @@ wheels = [
 
 [[package]]
 name = "gendantic"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
