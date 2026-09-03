@@ -7,10 +7,7 @@ regression where validator context silently never reached the LLM.
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from gendantic.generator import (
-    _extract_critical_validation_requirements,
-    _get_validator_hints_from_docstrings,
-)
+from gendantic.generator import _get_validator_hints_from_docstrings
 from gendantic.llm_driven_analyser import LLMDrivenModelAnalyser
 
 
@@ -72,16 +69,9 @@ def test_validator_hints_reach_generation_prompt_inputs() -> None:
     assert "check_consistency" in hints
 
 
-def test_critical_email_domain_requirement_is_extracted() -> None:
-    requirements = _extract_critical_validation_requirements(Employee)
-    assert "CRITICAL EMAIL DOMAIN" in requirements
-    assert "acme.com" in requirements
-
-
 def test_model_without_validators_yields_empty() -> None:
     class Plain(BaseModel):
         x: int
 
     assert LLMDrivenModelAnalyser._extract_validators_info(Plain) == {}
     assert _get_validator_hints_from_docstrings(Plain) == ""
-    assert _extract_critical_validation_requirements(Plain) == ""

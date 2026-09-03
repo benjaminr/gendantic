@@ -21,7 +21,6 @@ For example:
   sense as feedback about that product
 
 **MANDATORY VALIDATION REQUIREMENTS**:
-{critical_requirements}
 {validator_hints}
 
 **MODEL CONTEXT**:
