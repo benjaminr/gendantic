@@ -391,6 +391,7 @@ Correlations:
 - **Continuous** (`Normal`, `Uniform`, `LogNormal`, `Exponential`, `Beta`) — Kolmogorov-Smirnov test against the theoretical CDF.
 - **Discrete counts** (`Poisson`, `Binomial`) — chi-square goodness-of-fit on the count histogram.
 - **Categorical** — chi-square goodness-of-fit on category frequencies.
+- **Conditional** — checked *per case branch*: records are grouped by which case matched (on the discriminator value stored in the record) and each group is tested against its own case spec, yielding one result per branch (labelled e.g. `salary | department='Eng'`).
 - **Correlations** — empirical Spearman (what copulas control) vs. the declared target, with Pearson reported alongside.
 
 **Tuning the verdict:**
