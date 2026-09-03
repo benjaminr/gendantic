@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-03
+
+### Added
+
+- `gendantic.__version__` (from installed package metadata).
+- `generate_dataset` / `generate_dataset_sync` accept `max_concurrency`, one
+  budget shared across every model in the dataset, matching the other entry
+  points.
+
+### Changed
+
+- The sdist no longer bundles notebooks, the lockfile, CI workflows or dotfiles
+  (`MANIFEST.in`); it shrinks from ~480 KB to ~145 KB.
+- CI (and the release gate) now run `ruff format --check`; the tree has been
+  reformatted so the check passes.
+- The model-analysis prompt no longer asks the LLM for a
+  `field_generation_strategies` block and non-existent distribution types that
+  the strict response schema could never carry.
+
 ### Fixed
 
 - **Inherited fields are now honoured.** Distribution specs, `Conditional`,
@@ -33,23 +52,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which were previously dropped from the regenerated model.
 - `generate_synthetic_data` raises a clear `ValueError` for a negative `count`
   instead of silently returning an empty list.
-
-### Added
-
-- `gendantic.__version__` (from installed package metadata).
-- `generate_dataset` / `generate_dataset_sync` accept `max_concurrency`, one
-  budget shared across every model in the dataset, matching the other entry
-  points.
-
-### Changed
-
-- The sdist no longer bundles notebooks, the lockfile, CI workflows or dotfiles
-  (`MANIFEST.in`); it shrinks from ~480 KB to ~145 KB.
-- CI (and the release gate) now run `ruff format --check`; the tree has been
-  reformatted so the check passes.
-- The model-analysis prompt no longer asks the LLM for a
-  `field_generation_strategies` block and non-existent distribution types that
-  the strict response schema could never carry.
 
 ## [0.1.0] - 2026-09-03
 
@@ -128,5 +130,6 @@ Initial release.
   divide by zero: the parameter is clamped just below the singularity to a
   large-but-finite value (approaching comonotonicity).
 
-[Unreleased]: https://github.com/benjaminr/gendantic/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/benjaminr/gendantic/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/benjaminr/gendantic/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/benjaminr/gendantic/releases/tag/v0.1.0
