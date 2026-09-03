@@ -382,6 +382,98 @@ class Binomial(DistributionSpec):
         return "binomial"
 
 
+@dataclass(frozen=True)
+class TruncatedSpec(DistributionSpec):
+    """A distribution restricted to a sub-interval of its support.
+
+    Wraps a base spec with a probability window ``[p_lo, p_hi]`` (the base CDF
+    evaluated at the truncation bounds) and samples by inverse-CDF truncation:
+    ``quantile(p_lo + u * (p_hi - p_lo))``. This draws *from the conditional
+    distribution on the allowed interval* rather than clamping out-of-range
+    draws to the boundary, so the boundary keeps its true (near-zero) density
+    instead of accumulating a spike of clamped mass.
+
+    ``distribution_type`` and ``supports_correlation`` delegate to the base, so
+    a truncated field still routes to the right goodness-of-fit test and can
+    participate in copulas (truncation is a monotone transform of the marginal
+    uniform and preserves the rank dependence a copula induces).
+    """
+
+    base: DistributionSpec
+    p_lo: float
+    p_hi: float
+
+    def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
+        return self.quantile(rng.uniform(size=count))
+
+    def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
+        u = np.asarray(u, dtype=float)
+        return self.base.quantile(self.p_lo + u * (self.p_hi - self.p_lo))
+
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        raw = np.asarray(self.base.cdf(x), dtype=float)
+        return np.clip((raw - self.p_lo) / (self.p_hi - self.p_lo), 0.0, 1.0)
+
+    @property
+    def distribution_type(self) -> str:
+        return self.base.distribution_type
+
+    @property
+    def supports_correlation(self) -> bool:
+        return self.base.supports_correlation
+
+
+def truncate(
+    spec: DistributionSpec,
+    target_type: type,
+    constraints: dict[str, float | None],
+) -> DistributionSpec:
+    """Wrap ``spec`` in a :class:`TruncatedSpec` if its field has active bounds.
+
+    Reads the ``ge``/``le``/``gt``/``lt`` constraints and turns them into a
+    probability window via the base CDF. Returns ``spec`` unchanged when the
+    target is non-numeric, no bound is active, or the window is degenerate (so
+    unbounded fields keep their exact original sampling path).
+
+    For integer targets the strict/inclusive distinction is snapped onto the
+    integer support: ``gt=a`` allows ``>= a+1`` and ``ge=a`` allows ``>= a``;
+    ``lt=b`` allows ``<= b-1`` and ``le=b`` allows ``<= b``.
+    """
+    if target_type not in (int, float):
+        return spec
+
+    is_int = target_type is int
+    ge, le = constraints.get("ge"), constraints.get("le")
+    gt, lt = constraints.get("gt"), constraints.get("lt")
+
+    # Lower cut point x s.t. cdf(x) = P(X < lowest allowed value).
+    lo_cut: float | None = None
+    if gt is not None:
+        lo_cut = float(gt)
+    if ge is not None:
+        c = float(ge) - 1.0 if is_int else float(ge)
+        lo_cut = c if lo_cut is None else max(lo_cut, c)
+
+    # Upper cut point x s.t. cdf(x) = P(X <= highest allowed value).
+    hi_cut: float | None = None
+    if lt is not None:
+        hi_cut = float(lt) - 1.0 if is_int else float(lt)
+    if le is not None:
+        c = float(le)
+        hi_cut = c if hi_cut is None else min(hi_cut, c)
+
+    if lo_cut is None and hi_cut is None:
+        return spec
+
+    p_lo = float(spec.cdf(np.array([lo_cut]))[0]) if lo_cut is not None else 0.0
+    p_hi = float(spec.cdf(np.array([hi_cut]))[0]) if hi_cut is not None else 1.0
+    if p_hi - p_lo < 1e-9:
+        # Degenerate or inverted window: nothing sensible to sample from; leave
+        # the base spec and let the caller's boundary clamp handle it.
+        return spec
+    return TruncatedSpec(base=spec, p_lo=p_lo, p_hi=p_hi)
+
+
 class CopulaType:
     """
     Copula types for modelling different dependency structures.

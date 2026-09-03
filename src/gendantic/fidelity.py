@@ -42,6 +42,7 @@ from .distributions import (
     Correlations,
     DistributionSpec,
     Range,
+    truncate,
 )
 from .llm_driven_analyser import LLMDrivenModelAnalyser
 
@@ -173,14 +174,21 @@ def fidelity_report(
     Returns:
         A :class:`FidelityReport`. Never raises on statistical failure.
     """
-    all_specs = LLMDrivenModelAnalyser.extract_distribution_specs(model_class)
+    all_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
+        model_class
+    )
+    # Truncate bounded fields to the same window the sampler uses, so a field
+    # declared e.g. ``ge=0`` is compared against the truncated distribution it
+    # was actually sampled from rather than the full (untruncated) one.
     specs = {
-        name: spec
-        for name, spec in all_specs.items()
+        name: truncate(spec, target_type, constraints)
+        for name, (spec, target_type, constraints) in all_specs.items()
         if isinstance(spec, DistributionSpec)
     }
     conditionals = {
-        name: spec for name, spec in all_specs.items() if isinstance(spec, Conditional)
+        name: (spec, target_type, constraints)
+        for name, (spec, target_type, constraints) in all_specs.items()
+        if isinstance(spec, Conditional)
     }
     rows = [_as_dict(r) for r in records]
     report = FidelityReport(sample_size=len(rows))
@@ -194,10 +202,14 @@ def fidelity_report(
         column = [row[field_name] for row in rows]
         report.fields.append(_check_field(field_name, spec, column, alpha))
 
-    for field_name, cond in conditionals.items():
+    for field_name, (cond, target_type, constraints) in conditionals.items():
         if field_name not in rows[0] or cond.on not in rows[0]:
             continue
-        report.fields.extend(_check_conditional_field(field_name, cond, rows, alpha))
+        report.fields.extend(
+            _check_conditional_field(
+                field_name, cond, rows, alpha, target_type, constraints
+            )
+        )
 
     correlations = getattr(model_class, "__correlations__", None)
     if isinstance(correlations, Correlations):
@@ -249,6 +261,8 @@ def _check_conditional_field(
     cond: Conditional,
     rows: list[dict[str, Any]],
     alpha: float,
+    target_type: type = float,
+    constraints: dict[str, float | None] | None = None,
 ) -> list[FieldFidelity]:
     """Goodness-of-fit per case branch of a conditional field.
 
@@ -272,10 +286,12 @@ def _check_conditional_field(
         grouped.setdefault(key, []).append(row[field_name])
         group_spec[key] = spec
 
+    bounds = constraints or {"ge": None, "le": None, "gt": None, "lt": None}
     results: list[FieldFidelity] = []
     for key, values in grouped.items():
         group = f"{cond.on}={'|'.join(sorted(labels.get(key, ['?'])))}"
-        result = _check_field(field_name, group_spec[key], values, alpha)
+        effective = truncate(group_spec[key], target_type, bounds)
+        result = _check_field(field_name, effective, values, alpha)
         result.group = group
         results.append(result)
 

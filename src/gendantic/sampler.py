@@ -21,6 +21,7 @@ from .distributions import (
     Correlations,
     DistributionSpec,
     Ordering,
+    truncate,
 )
 
 logger = logging.getLogger("gendantic")
@@ -117,7 +118,12 @@ class DistributionSampler:
             if isinstance(spec, Conditional):
                 conditional_specs[name] = spec
             else:
-                plain_specs[name] = (spec, target_type, field_constraints)
+                # Truncate to the field's numeric bounds at the source (proper
+                # inverse-CDF truncation) rather than clamping draws afterwards.
+                # The per-record clamp in _convert_numpy_value stays as a cheap
+                # safety net (e.g. against int-rounding at the boundary).
+                effective = truncate(spec, target_type, field_constraints)
+                plain_specs[name] = (effective, target_type, field_constraints)
 
         if correlations is None or len(correlations) == 0:
             samples = self._columns_independent(plain_specs, count)
@@ -224,13 +230,19 @@ class DistributionSampler:
                     )
                     for i in range(count)
                 ]
+                _, target_type, field_constraints = normalised_specs[name]
                 samples[name] = self._sample_conditional_column(
-                    cond, discriminator, count
+                    cond, discriminator, count, target_type, field_constraints
                 )
                 known.add(name)
 
     def _sample_conditional_column(
-        self, cond: Conditional, discriminator: list[Any], count: int
+        self,
+        cond: Conditional,
+        discriminator: list[Any],
+        count: int,
+        target_type: type = float,
+        field_constraints: dict[str, float | None] | None = None,
     ) -> NDArray[Any]:
         """Sample a conditional field by grouping records that share a spec.
 
@@ -238,8 +250,10 @@ class DistributionSampler:
         (converted) discriminator value; records mapping to the same spec are
         sampled together as one vectorized batch, then scattered back to their
         positions. Group order follows first appearance, keeping the RNG
-        sequence deterministic.
+        sequence deterministic. Each group's spec is truncated to the field's
+        numeric bounds, matching the plain-field path.
         """
+        constraints = field_constraints or {"ge": None, "le": None, "gt": None, "lt": None}
         result: NDArray[Any] = np.empty(count, dtype=object)
         group_indices: dict[int, list[int]] = {}
         group_specs: dict[int, DistributionSpec] = {}
@@ -250,7 +264,8 @@ class DistributionSampler:
 
         for spec_id, indices in group_indices.items():
             idx = np.asarray(indices)
-            result[idx] = group_specs[spec_id].sample(len(indices), self.rng)
+            effective = truncate(group_specs[spec_id], target_type, constraints)
+            result[idx] = effective.sample(len(indices), self.rng)
         return result
 
     def _apply_constraints(

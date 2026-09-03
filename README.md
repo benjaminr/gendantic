@@ -130,12 +130,14 @@ Distributions work alongside Pydantic's `Field()` constraints:
 
 ```python
 class BoundedEmployee(BaseModel):
-    # Normal distribution, but clipped to valid range
+    # Normal distribution, restricted to a valid range
     salary: Annotated[int, Normal(mean=50000, std=15000)] = Field(ge=30000, le=200000)
 
     # Uniform within specific bounds
     age: Annotated[int, Uniform(min=18, max=65)] = Field(ge=18, le=100)
 ```
+
+`ge` / `le` / `gt` / `lt` bounds **truncate** the distribution: values are drawn from the conditional distribution *on the allowed interval* (inverse-CDF truncation), not by clamping out-of-range draws onto the boundary. Clamping would pile a spike of probability mass on the bound — e.g. a `Normal(mean=0)` with `ge=0` would land ~half its draws exactly on `0` — and make the field disagree with its declared shape. Truncation keeps the boundary at its true (near-zero) density, so the field remains a genuine truncated Normal. `fidelity_report()` is truncation-aware and compares against the truncated distribution, so bounded fields still pass. For integer fields the strict/inclusive distinction is snapped onto the integer support (`gt=a` → `≥ a+1`, `ge=a` → `≥ a`; `lt=b` → `≤ b-1`, `le=b` → `≤ b`).
 
 ### Reproducibility with Seeds
 
