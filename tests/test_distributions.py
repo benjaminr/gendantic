@@ -214,6 +214,14 @@ class TestDistributionSampler:
         assert len(records) == 5
         assert all(r == {} for r in records)
 
+    def test_unexpected_tuple_length_rejected(self):
+        """A fully-specified spec must be a (spec, type, constraints) 3-tuple."""
+        sampler = DistributionSampler(seed=42)
+        bad_specs = {"value": (Normal(mean=0, std=1), float)}  # 2-tuple
+
+        with pytest.raises(ValueError, match="Unexpected tuple length"):
+            sampler.sample_fields(bad_specs, count=5)  # type: ignore[arg-type]
+
 class TestDistributionExtraction:
     """Test extraction of distribution specs from Pydantic models."""
 
@@ -305,6 +313,30 @@ class TestCorrelations:
         # Self-correlation
         with pytest.raises(ValueError, match="with itself"):
             Correlations(("a", "a", 0.5))
+
+    def test_correlations_reject_bad_tuple_length(self):
+        """A spec that is not a 3- or 4-tuple is rejected."""
+        from gendantic import Correlations
+
+        with pytest.raises(ValueError, match="Each spec must be"):
+            Correlations(("a", "b"))  # type: ignore[arg-type]
+
+    def test_correlations_reject_non_string_fields(self):
+        """Field names must be strings."""
+        from gendantic import Correlations
+
+        with pytest.raises(ValueError, match="must be strings"):
+            Correlations((1, "b", 0.5))  # type: ignore[arg-type]
+
+    def test_correlations_repr_roundtrips_specs(self):
+        """repr() shows every spec as a 4-tuple including the copula."""
+        from gendantic import Correlations
+
+        corr = Correlations(("a", "b", 0.5), ("b", "c", 0.3, "gumbel"))
+        text = repr(corr)
+        assert text.startswith("Correlations(")
+        assert "('a', 'b', 0.5, 'gaussian')" in text
+        assert "('b', 'c', 0.3, 'gumbel')" in text
 
     def test_correlations_get_fields(self):
         """Test getting all fields in correlations."""
