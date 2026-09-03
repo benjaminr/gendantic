@@ -20,9 +20,16 @@ from .distributions import (
     CopulaType,
     Correlations,
     DistributionSpec,
+    Ordering,
 )
 
 logger = logging.getLogger("gendantic")
+
+# Maximum number of resampling rounds for Ordering(method="resample") before
+# giving up: each round redraws all still-violating records, so a compatible
+# ordering converges geometrically and this bound is only hit when the fields'
+# marginals overlap too heavily to order by rejection.
+_MAX_RESAMPLE_ROUNDS = 1000
 
 
 class DistributionSampler:
@@ -130,7 +137,16 @@ class DistributionSampler:
             )
 
         if constraints is not None:
-            self._apply_constraints(constraints, samples)
+            correlated_fields = (
+                correlations.get_fields() if correlations is not None else set()
+            )
+            self._apply_constraints(
+                constraints,
+                samples,
+                normalised_specs,
+                set(conditional_specs),
+                correlated_fields,
+            )
 
         return [
             {
@@ -238,13 +254,21 @@ class DistributionSampler:
         return result
 
     def _apply_constraints(
-        self, constraints: Constraints, samples: dict[str, NDArray[Any]]
+        self,
+        constraints: Constraints,
+        samples: dict[str, NDArray[Any]],
+        normalised_specs: dict[
+            str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
+        ],
+        conditional_fields: set[str],
+        correlated_fields: set[str],
     ) -> None:
         """Enforce cross-field constraints on the sampled columns in place.
 
-        ``Ordering`` is enforced by sorting each record's values across the
-        constrained fields ascending, so ``fields[0] <= fields[1] <= ...`` holds
-        for every record.
+        Each ``Ordering`` is enforced with its chosen ``method``: ``"sort"``
+        sorts each record's values across the constrained fields (guaranteed,
+        but reshapes marginals into order statistics); ``"resample"`` redraws
+        only the violating records to preserve each field's marginal.
         """
         for ordering in constraints.orderings():
             missing = [f for f in ordering.fields if f not in samples]
@@ -253,12 +277,117 @@ class DistributionSampler:
                     f"Ordering references field(s) not sampled via distributions: "
                     f"{', '.join(missing)}"
                 )
-            stacked = np.array(
-                [np.asarray(samples[f], dtype=float) for f in ordering.fields]
+            if ordering.method == "resample":
+                self._resample_ordering(
+                    ordering,
+                    samples,
+                    normalised_specs,
+                    conditional_fields,
+                    correlated_fields,
+                )
+            else:
+                stacked = np.array(
+                    [np.asarray(samples[f], dtype=float) for f in ordering.fields]
+                )
+                ordered = np.sort(stacked, axis=0)
+                for position, field_name in enumerate(ordering.fields):
+                    samples[field_name] = ordered[position]
+
+    def _resample_ordering(
+        self,
+        ordering: Ordering,
+        samples: dict[str, NDArray[Any]],
+        normalised_specs: dict[
+            str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
+        ],
+        conditional_fields: set[str],
+        correlated_fields: set[str],
+    ) -> None:
+        """Enforce an ordering by redrawing only the records that violate it.
+
+        Each field keeps its own marginal: violating records are resampled from
+        the fields' distributions until the whole batch complies. Ordering is
+        checked on the *converted* values (the ones the record exposes), so the
+        guarantee survives int rounding and constraint clipping. Raises if a
+        constrained field is not an independent plain distribution, or if the
+        rejection budget is exhausted because the marginals overlap too heavily.
+        """
+        fields = ordering.fields
+        for field_name in fields:
+            if field_name in conditional_fields:
+                raise ValueError(
+                    f"Ordering(method='resample') cannot include conditional field "
+                    f"{field_name!r}; use method='sort' or make the field independent."
+                )
+            if field_name in correlated_fields:
+                raise ValueError(
+                    f"Ordering(method='resample') cannot include correlated field "
+                    f"{field_name!r}; use method='sort' or drop it from __correlations__."
+                )
+
+        field_specs: dict[str, DistributionSpec] = {}
+        for field_name in fields:
+            spec = normalised_specs[field_name][0]
+            if not isinstance(spec, DistributionSpec):  # pragma: no cover - guarded above
+                raise ValueError(
+                    f"Ordering(method='resample') field {field_name!r} has no "
+                    f"independent distribution to resample from."
+                )
+            field_specs[field_name] = spec
+
+        cols = {f: np.asarray(samples[f], dtype=float).copy() for f in fields}
+
+        def violating_mask() -> NDArray[np.bool_]:
+            converted = [
+                self._converted_column(cols[f], *normalised_specs[f][1:]) for f in fields
+            ]
+            mask = np.zeros(len(converted[0]), dtype=bool)
+            for lower, upper in zip(converted[:-1], converted[1:], strict=True):
+                mask |= lower > upper
+            return mask
+
+        mask = violating_mask()
+        rounds = 0
+        while mask.any() and rounds < _MAX_RESAMPLE_ROUNDS:
+            n = int(mask.sum())
+            for field_name in fields:
+                redrawn = np.asarray(
+                    field_specs[field_name].sample(n, self.rng), dtype=float
+                )
+                cols[field_name][mask] = redrawn
+            mask = violating_mask()
+            rounds += 1
+
+        if mask.any():
+            rate = float(mask.mean())
+            raise ValueError(
+                f"Ordering(method='resample') on {fields} could not be satisfied: "
+                f"{rate:.1%} of records still violate the order after "
+                f"{_MAX_RESAMPLE_ROUNDS} resampling rounds. The fields' marginals "
+                f"overlap too heavily to order by rejection; separate the marginals "
+                f"or use method='sort'."
             )
-            ordered = np.sort(stacked, axis=0)
-            for position, field_name in enumerate(ordering.fields):
-                samples[field_name] = ordered[position]
+
+        for field_name in fields:
+            samples[field_name] = cols[field_name]
+
+    def _converted_column(
+        self,
+        column: NDArray[Any],
+        target_type: type,
+        constraints: dict[str, float | None],
+    ) -> NDArray[Any]:
+        """Convert a whole column to the values the record will expose, as floats.
+
+        Mirrors per-record conversion (int rounding + ge/le/gt/lt clipping) so
+        the ordering check matches what the caller ultimately sees.
+        """
+        return np.array(
+            [
+                float(self._convert_numpy_value(v, target_type, constraints))
+                for v in column
+            ]
+        )
 
     def _columns_correlated(
         self,

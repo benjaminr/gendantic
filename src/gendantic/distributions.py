@@ -672,29 +672,47 @@ class Conditional:
         return self.default
 
 
+ORDERING_METHODS = ("sort", "resample")
+
+
 class Ordering:
     """
     An ascending ordering constraint across two or more numeric fields.
 
     Declares that, within every generated record, the listed fields are in
-    non-decreasing order: ``fields[0] <= fields[1] <= ...``. Enforced after
-    sampling by sorting each record's values across these fields.
+    non-decreasing order: ``fields[0] <= fields[1] <= ...``. Two enforcement
+    strategies are available via ``method``:
 
-    Note:
-        Because enforcement sorts the sampled values, the constrained fields end
-        up sharing the pooled distribution's order statistics - their individual
-        marginals shift. This is the intended behaviour when the fields share a
-        domain (e.g. two timestamps) and is not appropriate for fields with very
-        different marginals.
+    ``"sort"`` (default)
+        Sort each record's values across the constrained fields. Always
+        succeeds and never discards draws, but because it reassigns which field
+        receives which value, each constrained field's marginal becomes an order
+        statistic (the first field is the row-wise minimum, the last the
+        maximum). Appropriate when the fields share a domain (e.g. two
+        timestamps) and the ordering matters more than the per-field marginals.
+
+    ``"resample"``
+        Keep each field's own sampled value and redraw only the records that
+        violate the order, repeating until all records comply. This preserves
+        each field's marginal *when the marginals are compatible with the order*
+        - i.e. already mostly separated (e.g. ``birth < hire < termination``) so
+        violations are rare. If the marginals overlap so heavily that the
+        rejection budget is exhausted, generation raises rather than return
+        silently distorted data. Resample fields must be independent plain
+        distributions (not correlated or conditional).
 
     Args:
         *fields: Two or more field names, in the required ascending order.
+        method: ``"sort"`` (default) or ``"resample"`` - see above.
 
     Example:
         __constraints__ = Constraints(Ordering("start", "end"))
+        __constraints__ = Constraints(
+            Ordering("birth", "hire", "termination", method="resample")
+        )
     """
 
-    def __init__(self, *fields: str) -> None:
+    def __init__(self, *fields: str, method: str = "sort") -> None:
         if len(fields) < 2:
             raise ValueError("Ordering requires at least two field names")
         for f in fields:
@@ -702,16 +720,28 @@ class Ordering:
                 raise ValueError(f"Ordering field names must be strings, got {f!r}")
         if len(set(fields)) != len(fields):
             raise ValueError(f"Ordering field names must be unique, got {fields}")
+        if method not in ORDERING_METHODS:
+            raise ValueError(
+                f"Ordering method must be one of {ORDERING_METHODS}, got {method!r}"
+            )
         self.fields: tuple[str, ...] = fields
+        self.method: str = method
 
     def __repr__(self) -> str:
-        return f"Ordering({', '.join(repr(f) for f in self.fields)})"
+        args = ", ".join(repr(f) for f in self.fields)
+        if self.method != "sort":
+            args += f", method={self.method!r}"
+        return f"Ordering({args})"
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Ordering) and other.fields == self.fields
+        return (
+            isinstance(other, Ordering)
+            and other.fields == self.fields
+            and other.method == self.method
+        )
 
     def __hash__(self) -> int:
-        return hash(("Ordering", self.fields))
+        return hash(("Ordering", self.fields, self.method))
 
 
 class Constraints:
