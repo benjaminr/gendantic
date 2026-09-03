@@ -7,6 +7,7 @@ Supports correlated sampling via multiple copula types.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -290,6 +291,62 @@ class DistributionSampler:
         # Transform through t CDF
         return np.asarray(stats.t.cdf(t_samples, df=df))
 
+    def _sample_archimedean_copula(
+        self,
+        corr_matrix: NDArray[Any],
+        count: int,
+        n_dims: int,
+        *,
+        theta_from_tau: Callable[[float], float],
+        sample_frailty: Callable[[float, int], NDArray[Any]],
+        generator_inverse: Callable[[NDArray[Any], float], NDArray[Any]],
+        positive_only_warning: str,
+        independent_when_zero: bool = False,
+    ) -> NDArray[Any]:
+        """Sample a single-parameter Archimedean copula via Marshall-Olkin frailty.
+
+        All three supported Archimedean copulas (Clayton, Gumbel, Frank) share
+        the same construction: draw a mixing variable ``V`` from a
+        copula-specific distribution, draw ``E_i ~ Exp(1)`` per dimension, then
+        map ``E_i / V`` through the copula's inverse generator to get uniform
+        marginals with the required dependence.
+
+        These copulas are exchangeable, so the average (positive) off-diagonal
+        correlation is used as Kendall's tau to set ``theta``. Dependence is
+        positive-only: a non-positive average falls back to a Gaussian copula
+        (with ``positive_only_warning`` logged). When ``independent_when_zero``
+        is set (Frank), a near-zero average yields independent uniforms instead.
+
+        Args:
+            theta_from_tau: Maps Kendall's tau to the copula parameter theta.
+            sample_frailty: Draws the mixing variable ``V`` (shape ``(count,)``)
+                given ``theta``. Drawn before ``E`` to fix the RNG order.
+            generator_inverse: Maps ``E / V`` (shape ``(count, n_dims)``) and
+                ``theta`` to uniform samples.
+            positive_only_warning: Message logged (with the average correlation)
+                when falling back to Gaussian for non-positive dependence.
+            independent_when_zero: If set, a near-zero average returns
+                independent uniforms rather than the Gaussian fallback.
+        """
+        avg_corr = self._average_offdiagonal(corr_matrix, n_dims)
+
+        if independent_when_zero and abs(avg_corr) <= 1e-3:
+            return np.asarray(self.rng.uniform(0.0, 1.0, size=(count, n_dims)))
+
+        non_positive = avg_corr < 0 if independent_when_zero else avg_corr <= 1e-3
+        if non_positive:
+            logger.warning(positive_only_warning, avg_corr)
+            return self._sample_gaussian_copula(corr_matrix, count, n_dims)
+
+        tau = min(avg_corr, 0.99)
+        theta = theta_from_tau(tau)
+
+        # Marshall-Olkin frailty: draw V, then E_i ~ Exp(1) (order fixes the RNG
+        # stream), then apply the inverse generator to E / V.
+        v = sample_frailty(theta, count)
+        e = self.rng.exponential(1.0, size=(count, n_dims))
+        return np.asarray(generator_inverse(e / v[:, np.newaxis], theta))
+
     def _sample_clayton_copula(
         self, corr_matrix: NDArray[Any], count: int, n_dims: int
     ) -> NDArray[Any]:
@@ -300,27 +357,19 @@ class DistributionSampler:
         together (crash together). Sampled exactly via the Marshall-Olkin
         frailty method with a Gamma mixing variable, giving uniform marginals
         and true lower-tail dependence lambda_L = 2^(-1/theta).
-
-        Single-parameter Archimedean copulas are exchangeable, so the average
-        (positive) correlation is used as Kendall's tau to set theta. Negative
-        average correlation is not representable and falls back to Gaussian.
         """
-        avg_corr = self._average_offdiagonal(corr_matrix, n_dims)
-        if avg_corr <= 1e-3:
-            logger.warning(
+        return self._sample_archimedean_copula(
+            corr_matrix,
+            count,
+            n_dims,
+            theta_from_tau=lambda tau: 2.0 * tau / (1.0 - tau),
+            sample_frailty=lambda theta, n: self.rng.gamma(1.0 / theta, 1.0, size=n),
+            generator_inverse=lambda t, theta: (1.0 + t) ** (-1.0 / theta),
+            positive_only_warning=(
                 "Clayton copula models positive dependence only; average "
-                "correlation %.3f is non-positive, falling back to Gaussian copula.",
-                avg_corr,
-            )
-            return self._sample_gaussian_copula(corr_matrix, count, n_dims)
-
-        tau = min(avg_corr, 0.99)
-        theta = 2 * tau / (1 - tau)  # Kendall's tau -> Clayton theta
-
-        # Marshall-Olkin frailty: V ~ Gamma(1/theta, 1), E_i ~ Exp(1)
-        v = self.rng.gamma(1.0 / theta, 1.0, size=count)
-        e = self.rng.exponential(1.0, size=(count, n_dims))
-        return (1.0 + e / v[:, np.newaxis]) ** (-1.0 / theta)
+                "correlation %.3f is non-positive, falling back to Gaussian copula."
+            ),
+        )
 
     def _sample_gumbel_copula(
         self, corr_matrix: NDArray[Any], count: int, n_dims: int
@@ -332,28 +381,22 @@ class DistributionSampler:
         together (boom together). Sampled exactly via the Marshall-Olkin
         frailty method with a positive-stable mixing variable, giving uniform
         marginals and true upper-tail dependence lambda_U = 2 - 2^(1/theta).
-
-        Exchangeable: average (positive) correlation is used as Kendall's tau.
-        Negative average correlation is not representable and falls back to
-        Gaussian.
         """
-        avg_corr = self._average_offdiagonal(corr_matrix, n_dims)
-        if avg_corr <= 1e-3:
-            logger.warning(
+        return self._sample_archimedean_copula(
+            corr_matrix,
+            count,
+            n_dims,
+            # Kendall's tau -> Gumbel theta (>= 1); stable index alpha = 1/theta.
+            theta_from_tau=lambda tau: 1.0 / (1.0 - tau),
+            sample_frailty=lambda theta, n: self._sample_positive_stable(
+                1.0 / theta, n
+            ),
+            generator_inverse=lambda t, theta: np.exp(-(t ** (1.0 / theta))),
+            positive_only_warning=(
                 "Gumbel copula models positive dependence only; average "
-                "correlation %.3f is non-positive, falling back to Gaussian copula.",
-                avg_corr,
-            )
-            return self._sample_gaussian_copula(corr_matrix, count, n_dims)
-
-        tau = min(avg_corr, 0.99)
-        theta = 1.0 / (1.0 - tau)  # Kendall's tau -> Gumbel theta (>= 1)
-        alpha = 1.0 / theta  # stable index in (0, 1)
-
-        # Marshall-Olkin frailty: V ~ positive-stable(alpha), E_i ~ Exp(1)
-        v = self._sample_positive_stable(alpha, count)
-        e = self.rng.exponential(1.0, size=(count, n_dims))
-        return np.asarray(np.exp(-((e / v[:, np.newaxis]) ** alpha)))
+                "correlation %.3f is non-positive, falling back to Gaussian copula."
+            ),
+        )
 
     def _sample_frank_copula(
         self, corr_matrix: NDArray[Any], count: int, n_dims: int
@@ -370,26 +413,29 @@ class DistributionSampler:
         correlation falls back to a Gaussian copula (which, like Frank, has no
         tail dependence and does honour negative correlations).
         """
-        avg_corr = self._average_offdiagonal(corr_matrix, n_dims)
-        if abs(avg_corr) <= 1e-3:
-            return self.rng.uniform(0.0, 1.0, size=(count, n_dims))
-        if avg_corr < 0:
-            logger.warning(
+
+        def sample_frailty(theta: float, n: int) -> NDArray[Any]:
+            # V ~ LogSeries(1 - e^-theta)
+            return np.asarray(self.rng.logseries(1.0 - np.exp(-theta), size=n))
+
+        def generator_inverse(t: NDArray[Any], theta: float) -> NDArray[Any]:
+            # phi(t) = -1/theta * log(1 - (1 - e^-theta) e^-t)
+            p = 1.0 - np.exp(-theta)
+            return np.asarray(-1.0 / theta * np.log1p(-p * np.exp(-t)))
+
+        return self._sample_archimedean_copula(
+            corr_matrix,
+            count,
+            n_dims,
+            theta_from_tau=self._frank_theta_from_tau,
+            sample_frailty=sample_frailty,
+            generator_inverse=generator_inverse,
+            positive_only_warning=(
                 "Frank frailty sampling requires positive association; average "
-                "correlation %.3f is negative, falling back to Gaussian copula.",
-                avg_corr,
-            )
-            return self._sample_gaussian_copula(corr_matrix, count, n_dims)
-
-        tau = min(avg_corr, 0.99)
-        theta = self._frank_theta_from_tau(tau)
-
-        # Marshall-Olkin frailty: V ~ LogSeries(1 - e^-theta), E_i ~ Exp(1)
-        p = 1.0 - np.exp(-theta)
-        v = self.rng.logseries(p, size=count)
-        e = self.rng.exponential(1.0, size=(count, n_dims))
-        # U_i = phi(E_i / V) with phi(t) = -1/theta * log(1 - (1 - e^-theta) e^-t)
-        return np.asarray(-1.0 / theta * np.log1p(-p * np.exp(-e / v[:, np.newaxis])))
+                "correlation %.3f is negative, falling back to Gaussian copula."
+            ),
+            independent_when_zero=True,
+        )
 
     def _average_offdiagonal(self, corr_matrix: NDArray[Any], n_dims: int) -> float:
         """Average of the off-diagonal correlation entries (signed)."""
