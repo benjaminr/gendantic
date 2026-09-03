@@ -215,6 +215,21 @@ class _ResolvedFK:
     null_probability: float
 
 
+def _iter_annotated_fields(
+    model_class: type[BaseModel],
+) -> Iterator[tuple[str, type, tuple[Any, ...]]]:
+    """Yield ``(field_name, base_type, markers)`` for each ``Annotated`` field.
+
+    ``base_type`` is the declared type (the first ``Annotated`` arg); ``markers``
+    are the remaining metadata args (distribution specs, ``PrimaryKey``,
+    ``ForeignKey``, ...). Non-``Annotated`` fields are skipped.
+    """
+    for field_name, annotation in getattr(model_class, "__annotations__", {}).items():
+        if get_origin(annotation) is Annotated:
+            args = get_args(annotation)
+            yield field_name, args[0], args[1:]
+
+
 def _field_base_type(model_class: type[BaseModel], name: str) -> type:
     annotation = getattr(model_class, "__annotations__", {}).get(name)
     if annotation is None:
@@ -228,13 +243,11 @@ def _field_base_type(model_class: type[BaseModel], name: str) -> type:
 def _annotated_pks(model_class: type[BaseModel]) -> list[tuple[str, PrimaryKey, type]]:
     """Return ``(field, PrimaryKey, base_type)`` for each PK-annotated field."""
     out: list[tuple[str, PrimaryKey, type]] = []
-    for field_name, annotation in getattr(model_class, "__annotations__", {}).items():
-        if get_origin(annotation) is Annotated:
-            args = get_args(annotation)
-            for arg in args[1:]:
-                if isinstance(arg, PrimaryKey):
-                    out.append((field_name, arg, args[0]))
-                    break
+    for field_name, base_type, markers in _iter_annotated_fields(model_class):
+        for marker in markers:
+            if isinstance(marker, PrimaryKey):
+                out.append((field_name, marker, base_type))
+                break
     return out
 
 
@@ -269,14 +282,11 @@ def _primary_key_names(model_class: type[BaseModel]) -> list[str]:
 def extract_foreign_keys(model_class: type[BaseModel]) -> dict[str, ForeignKey]:
     """Return a mapping of ``field_name -> ForeignKey`` for per-field annotations."""
     foreign_keys: dict[str, ForeignKey] = {}
-    annotations = getattr(model_class, "__annotations__", {})
-    for field_name, annotation in annotations.items():
-        if get_origin(annotation) is Annotated:
-            args = get_args(annotation)
-            for arg in args[1:]:
-                if isinstance(arg, ForeignKey):
-                    foreign_keys[field_name] = arg
-                    break
+    for field_name, _base_type, markers in _iter_annotated_fields(model_class):
+        for marker in markers:
+            if isinstance(marker, ForeignKey):
+                foreign_keys[field_name] = marker
+                break
     return foreign_keys
 
 
