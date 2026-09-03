@@ -21,6 +21,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is truncation-aware and compares against the truncated distribution.
 - Correlation fidelity now uses the rank statistic the copula family targets:
   Kendall's τ for Archimedean families, Spearman's ρ otherwise.
+- LLM field-generation calls are now concurrency-bounded (at most 8 in flight
+  per request) instead of firing every record batch at once, so generating
+  large batches no longer floods the provider or triggers rate-limit rejections.
 
 ### Fixed
 

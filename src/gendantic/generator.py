@@ -16,6 +16,13 @@ logger = logging.getLogger("gendantic")
 
 _T = TypeVar("_T")
 
+# Upper bound on in-flight LLM field-generation calls per generation request.
+# Records are batched (see ``_generate_remaining_fields``), and a large ``count``
+# produces many batches; firing them all at once would hammer the provider and
+# risk rate-limit rejections. This caps how many run concurrently while the rest
+# wait on a semaphore.
+_MAX_CONCURRENT_LLM_CALLS = 8
+
 # A single reusable event loop backs the synchronous wrappers. Using one
 # persistent loop (instead of ``asyncio.run``, which creates and tears down a
 # fresh loop per call) keeps litellm's cached async HTTP clients bound to a
@@ -304,6 +311,12 @@ async def _generate_remaining_fields(
         for i in range(0, len(display_records), batch_size)
     ]
 
+    # Bound how many batch calls are in flight at once. The semaphore is created
+    # per request so it binds to the event loop actually driving this call (the
+    # sync wrappers reuse one loop, async callers bring their own), avoiding the
+    # cross-loop pitfalls of a module-level semaphore.
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_LLM_CALLS)
+
     async def generate_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prompt = load_prompt("partial_record_generation").format(
             count=len(batch),
@@ -315,14 +328,15 @@ async def _generate_remaining_fields(
             domain=domain,
             context=context,
         )
-        return await client.generate_structured(
-            schema=partial_schema,
-            prompt=prompt,
-            count=len(batch),
-        )
+        async with semaphore:
+            return await client.generate_structured(
+                schema=partial_schema,
+                prompt=prompt,
+                count=len(batch),
+            )
 
     try:
-        # Run all batches concurrently
+        # Run all batches concurrently, capped by the semaphore above.
         batch_results = await asyncio.gather(*[generate_batch(b) for b in batches])
         # Flatten results
         return [record for batch in batch_results for record in batch]

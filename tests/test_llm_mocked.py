@@ -7,7 +7,9 @@ requiring a live LiteLLM proxy. The single seam we mock is
 ``make_client`` / ``patch_clients`` fixtures in conftest.py.
 """
 
+import asyncio
 from typing import Annotated, Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel, Field
@@ -20,6 +22,8 @@ from gendantic import (
     generate_synthetic_data_batch,
     generate_synthetic_data_sync,
 )
+
+from .conftest import ANALYSIS, is_analysis_call
 
 
 class Employee(BaseModel):
@@ -79,6 +83,47 @@ async def test_seed_is_reproducible(make_client, patch_clients) -> None:
         b = await generate_synthetic_data(Employee, count=4, seed=7)
     assert [r.age for r in a] == [r.age for r in b]
     assert [r.salary for r in a] == [r.salary for r in b]
+
+
+@pytest.mark.asyncio
+async def test_llm_field_calls_are_concurrency_bounded(patch_clients) -> None:
+    """Many record batches don't all hit the LLM at once.
+
+    With a large ``count`` the pipeline produces more field-generation batches
+    than :data:`_MAX_CONCURRENT_LLM_CALLS`; the semaphore must keep the number
+    of simultaneously in-flight calls at or below that cap.
+    """
+    from gendantic.generator import _MAX_CONCURRENT_LLM_CALLS
+
+    class OnlyLLM(BaseModel):
+        name: str  # no distribution fields -> every batch is an LLM call
+
+    inflight = 0
+    peak = 0
+
+    async def gen(
+        schema: dict[str, Any], prompt: str, count: int = 1
+    ) -> list[dict[str, Any]]:
+        nonlocal inflight, peak
+        if is_analysis_call(schema):
+            return [ANALYSIS]
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0.01)  # hold the slot so overlap is observable
+        inflight -= 1
+        return [{"name": f"n{i}"} for i in range(count)]
+
+    client = AsyncMock()
+    client.generate_structured = AsyncMock(side_effect=gen)
+
+    # count=200 with the default batch size of 15 yields ~14 batches, well above
+    # the concurrency cap of 8.
+    with patch_clients(client):
+        rows = await generate_synthetic_data(OnlyLLM, count=200, seed=1)
+
+    assert len(rows) == 200
+    assert peak > 1  # sanity: batches really do overlap
+    assert peak <= _MAX_CONCURRENT_LLM_CALLS  # but never beyond the cap
 
 
 @pytest.mark.asyncio
