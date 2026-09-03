@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-09-03
+
+Initial release.
+
+### Added
+
+- **Statistical distributions** via `Annotated` types: `Normal`, `Uniform`,
+  `Categorical`, `LogNormal`, `Exponential`, `Poisson`, `Beta`, `Binomial` —
+  sampled deterministically with numpy/scipy from a `seed`.
+- **Correlated fields** using copulas (`Correlations`, `CopulaType`): Gaussian,
+  Student's t, Clayton, Gumbel, and Frank, preserving each field's marginal.
+- **Conditional distributions** (`Conditional`): switch a field's distribution
+  on another field's value, keyed by category or numeric `Range`, resolved in
+  dependency order with cycle detection.
+- **Cross-field ordering constraints** (`Constraints`, `Ordering`) with two
+  strategies: `method="sort"` (default) and marginal-preserving
+  `method="resample"`.
+- **Relational generation** (`generate_dataset`, `PrimaryKey`, `ForeignKey`):
+  multi-model datasets with referential integrity, composite and self/mutual
+  keys, nullable foreign keys, and join tables.
+- **Database binding** (`gendantic.db`): `reflect_schema`, `infer_distributions`,
+  and `load_dataset` to reflect a live schema, generate data, and load it back.
+- **LLM-driven authoring**: `generate_model_from_description`,
+  `extend_model_with_distributions`, `extend_model_with_correlations`, with
+  AST-allowlist sandboxing of generated code.
+- **Fidelity validation** (`fidelity_report`): KS / chi-square goodness-of-fit
+  and correlation checks, with per-branch checks for conditional fields.
+- **Export**: `to_dataframe` and `Dataset.to_dataframes` (pandas extra).
+- **Async-first API** with `*_sync` wrappers and batch generation.
+
+[Unreleased]: https://github.com/benjaminr/gendantic/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/benjaminr/gendantic/releases/tag/v0.1.0
