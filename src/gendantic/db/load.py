@@ -4,16 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sqlalchemy import MetaData, func, select
+
 from ..relational import Dataset, _primary_key_columns, _resolve_generation_order
 from ._engine import as_engine, qualified_name, table_name_of
-
-try:
-    from sqlalchemy import MetaData, func, select
-except ImportError as exc:  # pragma: no cover - exercised via message assertion
-    raise ImportError(
-        "gendantic.db requires the 'db' extra. Install it with: "
-        "pip install 'gendantic[db]'"
-    ) from exc
 
 if TYPE_CHECKING:
     from sqlalchemy import Table

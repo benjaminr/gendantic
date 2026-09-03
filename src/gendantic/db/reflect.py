@@ -26,19 +26,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Annotated, Any, Optional
 
 from pydantic import BaseModel, Field, create_model
+from sqlalchemy import MetaData
 
 from ..distributions import Categorical
 from ..relational import ForeignKey, ForeignKeySpec, PrimaryKey
 from ._engine import as_engine, camel_case
 from .types import enum_values, python_type_for, string_max_length
-
-try:
-    from sqlalchemy import MetaData
-except ImportError as exc:  # pragma: no cover - exercised via message assertion
-    raise ImportError(
-        "gendantic.db requires the 'db' extra. Install it with: "
-        "pip install 'gendantic[db]'"
-    ) from exc
 
 if TYPE_CHECKING:
     from sqlalchemy import Column, Table

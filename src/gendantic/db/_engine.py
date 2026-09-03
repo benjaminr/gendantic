@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-try:
-    from sqlalchemy import create_engine
-    from sqlalchemy.engine import Engine
-except ImportError as exc:  # pragma: no cover - exercised via message assertion
-    raise ImportError(
-        "gendantic.db requires the 'db' extra. Install it with: "
-        "pip install 'gendantic[db]'"
-    ) from exc
+# The 'db' extra is guarded once in gendantic.db's package __init__, which
+# Python runs before this module can be imported.
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 
 
 def as_engine(source: "str | Engine") -> Engine:
