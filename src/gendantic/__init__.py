@@ -12,6 +12,12 @@ from .distributions import (
     Uniform,
 )
 from .export import to_dataframe
+from .fidelity import (
+    CorrelationFidelity,
+    FidelityReport,
+    FieldFidelity,
+    fidelity_report,
+)
 from .generator import (
     generate_synthetic_data,
     generate_synthetic_data_batch,
@@ -53,6 +59,11 @@ __all__ = [
     "Dataset",
     # Export
     "to_dataframe",
+    # Fidelity validation
+    "fidelity_report",
+    "FidelityReport",
+    "FieldFidelity",
+    "CorrelationFidelity",
     # Distribution specs
     "DistributionSpec",
     "Normal",

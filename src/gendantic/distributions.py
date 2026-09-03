@@ -62,6 +62,23 @@ class DistributionSpec(ABC):
         """
         pass
 
+    @abstractmethod
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        """
+        Compute the cumulative distribution function.
+
+        The inverse of :meth:`quantile`. Used for goodness-of-fit testing
+        (e.g. Kolmogorov-Smirnov) when validating that generated samples match
+        this distribution.
+
+        Args:
+            x: Array of values from this distribution's support
+
+        Returns:
+            Array of cumulative probabilities in [0, 1]
+        """
+        pass
+
     @property
     @abstractmethod
     def distribution_type(self) -> str:
@@ -96,6 +113,9 @@ class Normal(DistributionSpec):
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return np.asarray(stats.norm.ppf(u, loc=self.mean, scale=self.std))
 
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.norm.cdf(x, loc=self.mean, scale=self.std))
+
     @property
     def distribution_type(self) -> str:
         return "normal"
@@ -124,6 +144,9 @@ class Uniform(DistributionSpec):
 
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return self.min + (self.max - self.min) * u
+
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.clip((np.asarray(x) - self.min) / (self.max - self.min), 0.0, 1.0)
 
     @property
     def distribution_type(self) -> str:
@@ -173,6 +196,16 @@ class Categorical(DistributionSpec):
         indices = np.clip(indices, 0, len(categories) - 1)
         return np.array([categories[i] for i in indices])
 
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        # Cumulative probability up to and including each category, using the
+        # same weight order as ``quantile``. Categories carry no natural order,
+        # so this exists for interface symmetry; goodness-of-fit uses observed
+        # category frequencies directly rather than this CDF.
+        categories = list(self.weights.keys())
+        cumsum = np.cumsum(list(self.weights.values()))
+        index_of = {category: i for i, category in enumerate(categories)}
+        return np.array([cumsum[index_of[value]] for value in x])
+
     @property
     def distribution_type(self) -> str:
         return "categorical"
@@ -214,6 +247,9 @@ class LogNormal(DistributionSpec):
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return np.asarray(stats.lognorm.ppf(u, s=self.sigma, scale=np.exp(self.mean)))
 
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.lognorm.cdf(x, s=self.sigma, scale=np.exp(self.mean)))
+
     @property
     def distribution_type(self) -> str:
         return "lognormal"
@@ -238,6 +274,9 @@ class Exponential(DistributionSpec):
 
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return np.asarray(stats.expon.ppf(u, scale=self.scale))
+
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.expon.cdf(x, scale=self.scale))
 
     @property
     def distribution_type(self) -> str:
@@ -266,6 +305,9 @@ class Poisson(DistributionSpec):
 
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return np.asarray(stats.poisson.ppf(u, mu=self.lam))
+
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.poisson.cdf(x, mu=self.lam))
 
     @property
     def distribution_type(self) -> str:
@@ -302,6 +344,9 @@ class Beta(DistributionSpec):
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return np.asarray(stats.beta.ppf(u, self.alpha, self.beta))
 
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.beta.cdf(x, self.alpha, self.beta))
+
     @property
     def distribution_type(self) -> str:
         return "beta"
@@ -328,6 +373,9 @@ class Binomial(DistributionSpec):
 
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         return np.asarray(stats.binom.ppf(u, self.n, self.p))
+
+    def cdf(self, x: NDArray[Any]) -> NDArray[Any]:
+        return np.asarray(stats.binom.cdf(x, self.n, self.p))
 
     @property
     def distribution_type(self) -> str:
