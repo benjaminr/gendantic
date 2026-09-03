@@ -36,3 +36,20 @@ jobs:
 
       - name: Test (pytest)
         run: uv run pytest
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --python 3.12
+
+      - name: Test with coverage (fail under 85%)
+        run: uv run pytest --cov=gendantic --cov-report=term-missing --cov-fail-under=85
