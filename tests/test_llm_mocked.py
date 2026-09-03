@@ -3,13 +3,11 @@
 These exercise the generation pipeline (numpy sampling + LLM field merge +
 validation), the model-analysis wiring, and dynamic model generation without
 requiring a live LiteLLM proxy. The single seam we mock is
-``get_client().generate_structured(schema, prompt, count)``.
+``get_client().generate_structured(schema, prompt, count)`` via the
+``make_client`` / ``patch_clients`` fixtures in conftest.py.
 """
 
-import json
-from contextlib import ExitStack, contextmanager
-from typing import Annotated, Any, Callable, Iterator
-from unittest.mock import AsyncMock, patch
+from typing import Annotated, Any
 
 import pytest
 from pydantic import BaseModel, Field
@@ -23,54 +21,6 @@ from gendantic import (
     generate_synthetic_data_sync,
 )
 
-# A canned analysis payload matching LLMDrivenModelAnalyser._ANALYSIS_SCHEMA.
-_ANALYSIS = {
-    "model_analysis": {
-        "purpose": "test",
-        "domain": "testing",
-        "use_case": "unit-test",
-        "data_patterns": "synthetic",
-    },
-    "generation_guidance": {
-        "overall_strategy": "s",
-        "field_relationships": "r",
-        "data_quality_approach": "q",
-        "cultural_considerations": "c",
-    },
-}
-
-
-def _is_analysis_call(schema: dict[str, Any]) -> bool:
-    return "model_analysis" in json.dumps(schema)
-
-
-def make_fake_client(field_values_fn: Callable[[int], dict[str, Any]]) -> Any:
-    """Build a fake client whose generate_structured returns analysis payloads
-    for analysis calls and ``field_values_fn(i)`` rows for field-generation calls.
-    """
-
-    def gen(
-        schema: dict[str, Any], prompt: str, count: int = 1
-    ) -> list[dict[str, Any]]:
-        if _is_analysis_call(schema):
-            return [_ANALYSIS]
-        return [field_values_fn(i) for i in range(count)]
-
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    return client
-
-
-@contextmanager
-def patch_clients(client: Any) -> Iterator[None]:
-    """Patch get_client in every module that imported it."""
-    with ExitStack() as stack:
-        for mod in ("generator", "llm_driven_analyser", "model_generator"):
-            stack.enter_context(
-                patch(f"gendantic.{mod}.get_client", return_value=client)
-            )
-        yield
-
 
 class Employee(BaseModel):
     """Employee with mixed distribution + LLM fields."""
@@ -82,10 +32,13 @@ class Employee(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_merges_sampled_and_generated() -> None:
+async def test_pipeline_merges_sampled_and_generated(make_client, patch_clients) -> None:
     """Distribution fields come from numpy; other fields from the LLM; merged."""
-    client = make_fake_client(
-        lambda i: {"name": f"Person {i}", "email": f"person{i}@example.com"}
+    client = make_client(
+        lambda schema, prompt, count: [
+            {"name": f"Person {i}", "email": f"person{i}@example.com"}
+            for i in range(count)
+        ]
     )
     with patch_clients(client):
         rows = await generate_synthetic_data(Employee, count=5, seed=42)
@@ -100,20 +53,15 @@ async def test_pipeline_merges_sampled_and_generated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_distribution_fields_are_not_asked_of_llm() -> None:
+async def test_distribution_fields_are_not_asked_of_llm(make_client, patch_clients) -> None:
     """The LLM is only asked for non-distribution fields."""
     seen_field_schemas: list[list[str]] = []
 
-    def gen(schema: dict[str, Any], prompt: str, count: int = 1):
-        if _is_analysis_call(schema):
-            return [_ANALYSIS]
-        props = schema["items"]["properties"].keys()
-        seen_field_schemas.append(sorted(props))
+    def fields(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        seen_field_schemas.append(sorted(schema["items"]["properties"].keys()))
         return [{"name": f"n{i}", "email": f"e{i}@x.com"} for i in range(count)]
 
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    with patch_clients(client):
+    with patch_clients(make_client(fields)):
         await generate_synthetic_data(Employee, count=3, seed=1)
 
     # age/salary are sampled by numpy and must not appear in the LLM schema
@@ -121,19 +69,20 @@ async def test_distribution_fields_are_not_asked_of_llm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_is_reproducible() -> None:
-    client = make_fake_client(lambda i: {"name": "x", "email": "x@x.com"})
-    with patch_clients(client):
+async def test_seed_is_reproducible(make_client, patch_clients) -> None:
+    def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        return [{"name": "x", "email": "x@x.com"} for _ in range(count)]
+
+    with patch_clients(make_client(values)):
         a = await generate_synthetic_data(Employee, count=4, seed=7)
-    client2 = make_fake_client(lambda i: {"name": "x", "email": "x@x.com"})
-    with patch_clients(client2):
+    with patch_clients(make_client(values)):
         b = await generate_synthetic_data(Employee, count=4, seed=7)
     assert [r.age for r in a] == [r.age for r in b]
     assert [r.salary for r in a] == [r.salary for r in b]
 
 
 @pytest.mark.asyncio
-async def test_invalid_records_are_dropped_not_raised(caplog: Any) -> None:
+async def test_invalid_records_are_dropped_not_raised(make_client, patch_clients) -> None:
     """Records failing validation are skipped with a warning, not fatal."""
 
     class Bounded(BaseModel):
@@ -141,11 +90,10 @@ async def test_invalid_records_are_dropped_not_raised(caplog: Any) -> None:
         age: Annotated[int, Uniform(min=22, max=65)]
 
     # Return one too-short label (invalid) among valid ones.
-    def values(i: int) -> dict[str, Any]:
-        return {"label": "x" if i == 0 else f"label{i}"}
+    def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        return [{"label": "x" if i == 0 else f"label{i}"} for i in range(count)]
 
-    client = make_fake_client(values)
-    with patch_clients(client):
+    with patch_clients(make_client(values)):
         rows = await generate_synthetic_data(Bounded, count=4, seed=3)
 
     assert len(rows) == 3  # one dropped
@@ -153,8 +101,12 @@ async def test_invalid_records_are_dropped_not_raised(caplog: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_generation_over_contexts() -> None:
-    client = make_fake_client(lambda i: {"name": "n", "email": "n@x.com"})
+async def test_batch_generation_over_contexts(make_client, patch_clients) -> None:
+    client = make_client(
+        lambda schema, prompt, count: [
+            {"name": "n", "email": "n@x.com"} for _ in range(count)
+        ]
+    )
     with patch_clients(client):
         batches = await generate_synthetic_data_batch(
             Employee, contexts=["UK bank", "US startup"], count=3, seed=9
@@ -164,7 +116,7 @@ async def test_batch_generation_over_contexts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_distribution_fields_skips_llm() -> None:
+async def test_all_distribution_fields_skips_llm(make_client, patch_clients) -> None:
     """A model fully covered by distributions needs no LLM field call."""
 
     class AllDist(BaseModel):
@@ -173,25 +125,24 @@ async def test_all_distribution_fields_skips_llm() -> None:
 
     calls = {"field": 0}
 
-    def gen(schema: dict[str, Any], prompt: str, count: int = 1):
-        if _is_analysis_call(schema):
-            return [_ANALYSIS]
+    def fields(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
         calls["field"] += 1
         return [{} for _ in range(count)]
 
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    with patch_clients(client):
+    with patch_clients(make_client(fields)):
         rows = await generate_synthetic_data(AllDist, count=5, seed=2)
 
     assert len(rows) == 5
     assert calls["field"] == 0  # no field-generation LLM call
 
 
-def test_sync_wrapper_runs_without_event_loop() -> None:
+def test_sync_wrapper_runs_without_event_loop(make_client, patch_clients) -> None:
     """generate_synthetic_data_sync runs the async pipeline via asyncio.run."""
-    client = make_fake_client(
-        lambda i: {"name": f"Person {i}", "email": f"person{i}@example.com"}
+    client = make_client(
+        lambda schema, prompt, count: [
+            {"name": f"Person {i}", "email": f"person{i}@example.com"}
+            for i in range(count)
+        ]
     )
     with patch_clients(client):
         rows = generate_synthetic_data_sync(Employee, count=3, seed=42)
@@ -245,7 +196,7 @@ def test_make_schema_strict_enforces_strict_rules() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_model_from_description_mocked() -> None:
+async def test_generate_model_from_description_mocked(make_client, patch_clients) -> None:
     """The dynamic model generator builds a working model from LLM code."""
     code = (
         "class Ticket(BaseModel):\n"
@@ -253,8 +204,7 @@ async def test_generate_model_from_description_mocked() -> None:
         "    title: str\n"
         "    priority: Annotated[int, Uniform(min=1, max=5)]\n"
     )
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(return_value=[{"code": code}])
+    client = make_client(lambda schema, prompt, count: [{"code": code}])
     with patch_clients(client):
         model_class, src = await generate_model_from_description(
             "a support ticket", model_name="Ticket"

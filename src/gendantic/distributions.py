@@ -22,7 +22,7 @@ Usage:
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -366,7 +366,6 @@ class CopulaType:
 CorrelationSpec = tuple[str, str, float] | tuple[str, str, float, str]
 
 
-@dataclass
 class Correlations:
     """
     Specify correlations between distribution-sampled fields with optional copula types.
@@ -400,16 +399,13 @@ class Correlations:
             )
     """
 
-    _specs: list[tuple[str, str, float, str]] = field(default_factory=list)
-    _default_copula: str = field(default=CopulaType.GAUSSIAN)
-
     def __init__(
         self,
         *specs: CorrelationSpec,
         default_copula: str = CopulaType.GAUSSIAN,
     ) -> None:
-        object.__setattr__(self, "_specs", [])
-        object.__setattr__(self, "_default_copula", default_copula)
+        self._specs: list[tuple[str, str, float, str]] = []
+        self._default_copula = default_copula
 
         for spec in specs:
             if len(spec) == 3:
