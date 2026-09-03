@@ -36,7 +36,6 @@ classifiers = [
 dependencies = [
     "pydantic[email]>=2.5.0",
     "litellm>=1.40.0",
-    "httpx>=0.24.0",
     "python-dotenv>=1.1.1",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
@@ -45,6 +44,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/benjaminr/gendantic"
 Repository = "https://github.com/benjaminr/gendantic"
+Documentation = "https://github.com/benjaminr/gendantic#readme"
+Changelog = "https://github.com/benjaminr/gendantic/blob/main/CHANGELOG.md"
 Issues = "https://github.com/benjaminr/gendantic/issues"
 
 [project.optional-dependencies]
@@ -62,7 +63,7 @@ db = [
 ]
 
 [tool.setuptools.package-data]
-gendantic = ["prompts/*.txt"]
+gendantic = ["prompts/*.txt", "py.typed"]
 
 [tool.ruff]
 target-version = "py310"
