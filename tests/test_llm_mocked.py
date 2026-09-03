@@ -82,22 +82,70 @@ async def test_seed_is_reproducible(make_client, patch_clients) -> None:
 
 
 @pytest.mark.asyncio
-async def test_invalid_records_are_dropped_not_raised(make_client, patch_clients) -> None:
-    """Records failing validation are skipped with a warning, not fatal."""
+async def test_invalid_records_are_topped_up_to_reach_count(
+    make_client, patch_clients
+) -> None:
+    """A transient invalid record is regenerated so the full count is returned."""
 
     class Bounded(BaseModel):
         label: str = Field(min_length=3)
         age: Annotated[int, Uniform(min=22, max=65)]
 
-    # Return one too-short label (invalid) among valid ones.
+    # First-ever record is too short (invalid); every record after that is
+    # valid. A single top-up round should recover the shortfall.
+    calls = {"n": 0}
+
     def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
-        return [{"label": "x" if i == 0 else f"label{i}"} for i in range(count)]
+        out = []
+        for i in range(count):
+            first_ever = calls["n"] == 0 and i == 0
+            out.append({"label": "x" if first_ever else f"label{calls['n']}_{i}"})
+        calls["n"] += 1
+        return out
 
     with patch_clients(make_client(values)):
         rows = await generate_synthetic_data(Bounded, count=4, seed=3)
 
-    assert len(rows) == 3  # one dropped
+    assert len(rows) == 4  # shortfall regenerated, not dropped
     assert all(len(r.label) >= 3 for r in rows)
+    assert calls["n"] == 2  # one initial round + one top-up round
+
+
+@pytest.mark.asyncio
+async def test_persistent_validation_failure_raises(make_client, patch_clients) -> None:
+    """When every record fails validation, generation raises rather than lying."""
+
+    class Bounded(BaseModel):
+        label: str = Field(min_length=3)
+        age: Annotated[int, Uniform(min=22, max=65)]
+
+    # Always return too-short labels: no top-up round can succeed.
+    def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        return [{"label": "x"} for _ in range(count)]
+
+    with patch_clients(make_client(values)):
+        with pytest.raises(ValueError, match="No valid .* records could be generated"):
+            await generate_synthetic_data(Bounded, count=4, seed=3)
+
+
+@pytest.mark.asyncio
+async def test_partial_progress_then_exhaustion_raises(
+    make_client, patch_clients
+) -> None:
+    """If retries make partial progress but can't reach count, it raises."""
+
+    class Bounded(BaseModel):
+        label: str = Field(min_length=3)
+        age: Annotated[int, Uniform(min=22, max=65)]
+
+    # The first record of every batch is invalid: round 1 (count=4) yields 3
+    # valid, the size-1 top-up round then yields 0 and stops.
+    def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        return [{"label": "x" if i == 0 else f"label{i}"} for i in range(count)]
+
+    with patch_clients(make_client(values)):
+        with pytest.raises(ValueError, match="Could only generate 3 of 4"):
+            await generate_synthetic_data(Bounded, count=4, seed=3)
 
 
 @pytest.mark.asyncio
