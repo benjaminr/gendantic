@@ -141,7 +141,9 @@ class LLMDrivenModelAnalyser:
 
         # Only the data actually rendered into the analysis prompt is collected
         # here (see _build_analysis_prompt): the JSON schema plus, per field, its
-        # type info, constraints, description, schema fragment and validators.
+        # type info, description, schema fragment and validators. Field
+        # constraints (ge/le/pattern/...) reach the LLM through each field's
+        # schema fragment, so they are not extracted separately.
         model_info: dict[str, Any] = {
             "schema": schema,
             "fields": {},
@@ -152,7 +154,6 @@ class LLMDrivenModelAnalyser:
                 "type_info": cls._extract_field_type_info(
                     field_name, model_class, field_info
                 ),
-                "constraints": cls._extract_field_constraints_raw(field_info),
                 "description": getattr(field_info, "description", None),
                 "schema_info": schema.get("properties", {}).get(field_name, {}),
                 "field_validators": cls._extract_field_specific_validators(
@@ -181,27 +182,6 @@ class LLMDrivenModelAnalyser:
             "is_required": field_info.is_required(),
             "default": field_info.default if field_info.default is not ... else None,
         }
-
-    @classmethod
-    def _extract_field_constraints_raw(cls, field_info: FieldInfo) -> dict[str, Any]:
-        """Extract raw Pydantic constraints without interpretation."""
-        constraints = {}
-
-        # Numeric constraints
-        for attr in ["gt", "ge", "lt", "le", "multiple_of"]:
-            if hasattr(field_info, attr):
-                value = getattr(field_info, attr)
-                if value is not None:
-                    constraints[attr] = value
-
-        # String constraints
-        for attr in ["min_length", "max_length", "pattern"]:
-            if hasattr(field_info, attr):
-                value = getattr(field_info, attr)
-                if value is not None:
-                    constraints[attr] = value
-
-        return constraints
 
     @classmethod
     def _extract_field_specific_validators(
@@ -366,7 +346,7 @@ class LLMDrivenModelAnalyser:
   - Type: {field_data["type_info"]["annotation"]}
   - Required: {field_data["type_info"]["is_required"]}
   - Default: {field_data["type_info"]["default"]}
-  - Constraints: {json.dumps(field_data["constraints"], indent=2) if field_data["constraints"] else "None"}
+  - Constraints: None
   - Description: {field_data["description"]}
   - Field Validators: {json.dumps(field_data["field_validators"], indent=2) if field_data["field_validators"] else "None"}
   - Schema: {json.dumps(field_data["schema_info"], indent=2) if field_data["schema_info"] else "None"}"""

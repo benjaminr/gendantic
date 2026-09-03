@@ -106,13 +106,15 @@ async def extend_model_with_correlations(
     if not dist_specs:
         raise ValueError(
             f"Model {model_class.__name__} has no distribution-annotated fields. "
-            "extend_model() requires at least 2 fields with distribution specs."
+            "extend_model_with_correlations() requires at least 2 fields with "
+            "distribution specs."
         )
 
     if len(dist_specs) < 2:
         raise ValueError(
             f"Model {model_class.__name__} has only {len(dist_specs)} distribution field(s). "
-            "extend_model() requires at least 2 fields to create correlations."
+            "extend_model_with_correlations() requires at least 2 fields to create "
+            "correlations."
         )
 
     # Get the model source code representation
@@ -187,8 +189,6 @@ async def extend_model_with_distributions(
 
 def _get_basic_model_source_repr(model_class: type[BaseModel]) -> str:
     """Generate a source code representation of a basic model (no distributions)."""
-    from pydantic_core import PydanticUndefined
-
     lines = [f"class {model_class.__name__}(BaseModel):"]
 
     # Add docstring if present
@@ -276,8 +276,6 @@ def _get_model_source_repr(
         # Check for actual default value (not PydanticUndefined which means required)
         if field_info.default is not PydanticUndefined:
             lines.append(f"    {field_name}: {annotation_str} = {field_info.default!r}")
-        elif field_info.default_factory is not None:
-            lines.append(f"    {field_name}: {annotation_str}")
         else:
             lines.append(f"    {field_name}: {annotation_str}")
 
@@ -294,13 +292,8 @@ def _annotation_to_string(annotation: Any) -> str:
         metadata = args[1:]
 
         base_str = _type_to_string(base_type)
-        metadata_strs = []
-        for m in metadata:
-            if hasattr(m, "__class__") and hasattr(m, "__repr__"):
-                # For distribution specs, use repr
-                metadata_strs.append(repr(m))
-            else:
-                metadata_strs.append(str(m))
+        # Distribution specs and other markers round-trip through repr().
+        metadata_strs = [repr(m) for m in metadata]
 
         return f"Annotated[{base_str}, {', '.join(metadata_strs)}]"
 
