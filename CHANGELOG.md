@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Per-pair copulas** are now modelled as a vine (1-truncated R-vine / Markov
+  tree): each correlation pair keeps its own family and strength instead of
+  collapsing to a single averaged copula. Mixed families are honoured per pair;
+  the pairs must form a forest (cycles and duplicate pairs raise), and a
+  negative correlation on a positive-only Archimedean family (Clayton, Gumbel)
+  raises. Homogeneous Gaussian / Student-t specs still use the exact full
+  correlation matrix.
+- **Bounded fields** (`ge` / `le` / `gt` / `lt`) are now **truncated** via the
+  inverse CDF instead of clamped, so the boundary no longer accumulates a spike
+  of mass and the field stays faithful to its declared shape. `fidelity_report`
+  is truncation-aware and compares against the truncated distribution.
+- Correlation fidelity now uses the rank statistic the copula family targets:
+  Kendall's τ for Archimedean families, Spearman's ρ otherwise.
+
+### Fixed
+
+- Student-t conditional (copula h-inverse) now uses `df+1` for the inner
+  quantile, fixing the conditional-sampling round-trip.
+
 ## [0.1.0] - 2026-09-03
 
 Initial release.
