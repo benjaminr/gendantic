@@ -140,7 +140,15 @@ def fidelity_report(
     Returns:
         A :class:`FidelityReport`. Never raises on statistical failure.
     """
-    specs = LLMDrivenModelAnalyser.extract_distribution_specs(model_class)
+    # Conditional fields are sampled per-group; goodness-of-fit against a single
+    # marginal does not apply, so they are skipped here (checked in a follow-up).
+    specs = {
+        name: spec
+        for name, spec in LLMDrivenModelAnalyser.extract_distribution_specs(
+            model_class
+        ).items()
+        if isinstance(spec, DistributionSpec)
+    }
     rows = [_as_dict(r) for r in records]
     report = FidelityReport(sample_size=len(rows))
 

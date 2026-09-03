@@ -5,7 +5,7 @@ from typing import Annotated, Any, get_args, get_origin
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
-from .distributions import DistributionSpec
+from .distributions import Conditional, DistributionSpec
 from .llm import get_client
 from .prompts import load_prompt
 
@@ -16,19 +16,19 @@ class LLMDrivenModelAnalyser:
     @classmethod
     def extract_distribution_specs(
         cls, model_class: type[BaseModel]
-    ) -> dict[str, DistributionSpec]:
+    ) -> dict[str, DistributionSpec | Conditional]:
         """
         Extract distribution specifications from Annotated type hints.
 
-        Scans the model's field annotations for DistributionSpec instances
-        within Annotated types.
+        Scans the model's field annotations for DistributionSpec (and
+        Conditional) instances within Annotated types.
 
         Args:
             model_class: Pydantic model class to extract specs from
 
         Returns:
-            Dict mapping field names to their DistributionSpec instances.
-            Fields without distribution specs are not included.
+            Dict mapping field names to their DistributionSpec/Conditional
+            instances. Fields without distribution specs are not included.
 
         Example:
             class Employee(BaseModel):
@@ -38,7 +38,7 @@ class LLMDrivenModelAnalyser:
             specs = LLMDrivenModelAnalyser.extract_distribution_specs(Employee)
             # Returns: {"salary": Normal(mean=50000, std=15000)}
         """
-        specs: dict[str, DistributionSpec] = {}
+        specs: dict[str, DistributionSpec | Conditional] = {}
 
         annotations = getattr(model_class, "__annotations__", {})
         for field_name, annotation in annotations.items():
@@ -47,7 +47,7 @@ class LLMDrivenModelAnalyser:
                 args = get_args(annotation)
                 # args[0] is the base type, rest are metadata
                 for arg in args[1:]:
-                    if isinstance(arg, DistributionSpec):
+                    if isinstance(arg, DistributionSpec | Conditional):
                         specs[field_name] = arg
                         break  # Only one distribution per field
 
@@ -56,7 +56,7 @@ class LLMDrivenModelAnalyser:
     @classmethod
     def extract_distribution_specs_with_types(
         cls, model_class: type[BaseModel]
-    ) -> dict[str, tuple[DistributionSpec, type, dict[str, float | None]]]:
+    ) -> dict[str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]]:
         """
         Extract distribution specifications with their target types and constraints.
 
@@ -65,10 +65,13 @@ class LLMDrivenModelAnalyser:
         (ge, le, gt, lt) for clipping sampled values.
 
         Returns:
-            Dict mapping field names to (DistributionSpec, target_type, constraints) tuples.
+            Dict mapping field names to (spec, target_type, constraints) tuples,
+            where spec is a DistributionSpec or a Conditional.
             constraints dict has keys: 'ge', 'le', 'gt', 'lt' with float values or None.
         """
-        specs: dict[str, tuple[DistributionSpec, type, dict[str, float | None]]] = {}
+        specs: dict[
+            str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
+        ] = {}
 
         annotations = getattr(model_class, "__annotations__", {})
         model_fields = model_class.model_fields
@@ -78,7 +81,7 @@ class LLMDrivenModelAnalyser:
                 args = get_args(annotation)
                 base_type = args[0]  # The actual type (int, float, str, etc.)
                 for arg in args[1:]:
-                    if isinstance(arg, DistributionSpec):
+                    if isinstance(arg, DistributionSpec | Conditional):
                         # Extract Field constraints if present
                         constraints: dict[str, float | None] = {
                             "ge": None,
