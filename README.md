@@ -690,6 +690,7 @@ The `notebooks/` directory contains interactive tutorials:
 4. **04_dynamic_models.ipynb** - Generating models from descriptions
 5. **05_model_extension.ipynb** - Extending models with distributions and correlations
 6. **06_relational.ipynb** - Multi-model datasets with primary/foreign keys and referential integrity
+7. **07_fidelity.ipynb** - Statistically validating generated data against its spec with `fidelity_report()`
 
 Install notebook dependencies:
 ```bash
