@@ -1,10 +1,10 @@
 """Edge-case routing in correlated copula sampling.
 
-Covers the branches in ``DistributionSampler._columns_correlated`` /
-``_sample_archimedean_copula`` that decide *how* fields get sampled: excluding
-distributions that cannot be correlated, falling back to a Gaussian base for
-mixed copula specs, treating zero correlation as independence, and rejecting
-negative dependence for positive-only Archimedean copulas.
+Covers the branches in ``DistributionSampler._columns_correlated`` that decide
+*how* fields get sampled: excluding distributions that cannot be correlated,
+honouring mixed copula families per-pair through the vine, treating zero
+correlation as independence, and rejecting negative dependence for
+positive-only Archimedean copulas.
 """
 
 import logging
@@ -43,17 +43,34 @@ def test_categorical_field_is_excluded_from_correlation(caplog) -> None:
     assert "does not support correlation" in caplog.text
 
 
-def test_mixed_copula_types_fall_back_to_gaussian_base() -> None:
-    # Two different copula types among capable fields -> Gaussian base is used.
+def test_mixed_copula_types_are_honoured_per_pair() -> None:
+    # Mixed families no longer collapse to a Gaussian base: each pair keeps its
+    # own copula via the vine. a-b is Clayton (lower tail), a-c is Gumbel (upper
+    # tail); both correlations are induced and the tail asymmetries are opposite.
     specs = {"a": _normal_field(), "b": _normal_field(), "c": _normal_field()}
     sampler = DistributionSampler(seed=2)
     records = sampler.sample_fields(
         specs,
-        500,
-        correlations=Correlations(("a", "b", 0.7, "clayton"), ("a", "c", 0.6, "gumbel")),
+        6000,
+        correlations=Correlations(("a", "b", 0.6, "clayton"), ("a", "c", 0.6, "gumbel")),
     )
-    # Correlation is still induced (Gaussian base honours the requested value).
-    assert _corr(records, "a", "b") > 0.5
+    assert _corr(records, "a", "b") > 0.4
+    assert _corr(records, "a", "c") > 0.4
+
+    a = np.array([r["a"] for r in records])
+    lo_a, hi_a = np.quantile(a, [0.05, 0.95])
+    # Clayton pair (a, b): more joint-low co-movement than joint-high.
+    b = np.array([r["b"] for r in records])
+    lo_b, hi_b = np.quantile(b, [0.05, 0.95])
+    clayton_low = np.mean((a < lo_a) & (b < lo_b))
+    clayton_high = np.mean((a > hi_a) & (b > hi_b))
+    assert clayton_low > clayton_high
+    # Gumbel pair (a, c): more joint-high co-movement than joint-low.
+    c = np.array([r["c"] for r in records])
+    lo_c, hi_c = np.quantile(c, [0.05, 0.95])
+    gumbel_low = np.mean((a < lo_a) & (c < lo_c))
+    gumbel_high = np.mean((a > hi_a) & (c > hi_c))
+    assert gumbel_high > gumbel_low
 
 
 def test_zero_correlation_samples_independently() -> None:
@@ -67,17 +84,12 @@ def test_zero_correlation_samples_independently() -> None:
 
 
 @pytest.mark.parametrize("copula", ["clayton", "gumbel"])
-def test_positive_only_copula_falls_back_to_gaussian_for_negative_corr(
-    copula, caplog
-) -> None:
+def test_positive_only_copula_rejects_negative_corr(copula) -> None:
+    # Clayton/Gumbel model positive dependence only. Rather than silently
+    # substituting a Gaussian, a negative correlation now raises.
     specs = {"x": _normal_field(), "y": _normal_field()}
     sampler = DistributionSampler(seed=4)
-    with caplog.at_level(logging.WARNING, logger="gendantic"):
-        records = sampler.sample_fields(
+    with pytest.raises(ValueError, match="positive dependence only"):
+        sampler.sample_fields(
             specs, 300, correlations=Correlations(("x", "y", -0.6, copula))
         )
-
-    # Achieving a negative correlation proves the Gaussian fallback ran:
-    # Clayton/Gumbel are positive-only and could never produce it.
-    assert _corr(records, "x", "y") < -0.3
-    assert "non-positive" in caplog.text

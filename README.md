@@ -197,9 +197,6 @@ class FinancialData(BaseModel):
     loss_severity: Annotated[float, LogNormal(mean=8, sigma=1)]
 
     __correlations__ = Correlations(
-        # Gaussian (default): standard correlation, no tail dependence
-        ("stock_return", "bond_return", 0.3),
-
         # Student's t: heavy tails, extreme values occur together (financial crises)
         ("stock_return", "bond_return", 0.5, "student_t"),
 
@@ -209,20 +206,28 @@ class FinancialData(BaseModel):
         # Clayton: lower tail dependence - things crash together
         ("risk_score", "loss_severity", 0.6, "clayton"),
 
-        # Frank: symmetric, no tail dependence (weak correlations)
+        # Frank: symmetric, no tail dependence (weak correlations, sign allowed)
         ("stock_return", "risk_score", -0.2, "frank"),
     )
 ```
 
 **Copula Types:**
 
-| Copula | Tail Dependence | Use Case |
-|--------|-----------------|----------|
-| `gaussian` | None | Standard correlations, most business data |
-| `student_t` | Both tails | Financial data, extreme events together |
-| `clayton` | Lower tail | Risk modelling, crashes happen together |
-| `gumbel` | Upper tail | Success metrics, booms happen together |
-| `frank` | None | Weak to moderate symmetric correlations |
+| Copula | Tail Dependence | `corr` means | Sign | Use Case |
+|--------|-----------------|--------------|------|----------|
+| `gaussian` | None | latent correlation | ±  | Standard correlations, most business data |
+| `student_t` | Both tails | latent correlation | ±  | Financial data, extreme events together |
+| `clayton` | Lower tail | Kendall's τ | + only | Risk modelling, crashes happen together |
+| `gumbel` | Upper tail | Kendall's τ | + only | Success metrics, booms happen together |
+| `frank` | None | Kendall's τ | ±  | Weak to moderate symmetric correlations |
+
+For the Gaussian and Student-t families `corr` is the latent (Pearson-of-the-copula) correlation; for the Archimedean families (Clayton, Gumbel, Frank) it is the target **Kendall's τ**. Clayton and Gumbel model positive dependence only — a negative `corr` for either raises `ValueError` (use `gaussian` or `frank` for negative relationships).
+
+**How per-pair copulas compose.** Each pair keeps its own family and strength — mixed families no longer collapse to a single joint copula. Internally the pairs form a [vine](https://en.wikipedia.org/wiki/Vine_copula) (a 1-truncated R-vine, equivalent to a Markov tree): the specified pairs are the tree edges, and two fields not joined by an edge are conditionally independent given the path between them. This means:
+
+- The pairs must form a **forest** — each pair must connect two fields not already linked. A set of pairs that closes a cycle (e.g. `a–b`, `b–c`, `a–c`) raises `ValueError`, because a 1-truncated vine cannot place the third pair without conditional-copula parameters the spec does not provide.
+- A pair may be specified **at most once**; a repeated pair (in either order) raises `ValueError`.
+- Homogeneous all-Gaussian or all-Student-t specs still use an exact full correlation matrix (no forest restriction beyond a valid matrix); the vine path is used whenever families are mixed or any Archimedean family is present.
 
 ### LLM-Suggested Distributions with `extend_model_with_distributions()`
 
@@ -418,7 +423,7 @@ Correlations:
 - **Discrete counts** (`Poisson`, `Binomial`) — chi-square goodness-of-fit on the count histogram.
 - **Categorical** — chi-square goodness-of-fit on category frequencies.
 - **Conditional** — checked *per case branch*: records are grouped by which case matched (on the discriminator value stored in the record) and each group is tested against its own case spec, yielding one result per branch (labelled e.g. `salary | department='Eng'`).
-- **Correlations** — empirical Spearman (what copulas control) vs. the declared target, with Pearson reported alongside.
+- **Correlations** — the observed rank statistic the copula family targets vs. the declared target: Kendall's τ for the Archimedean families (Clayton, Gumbel, Frank), Spearman's ρ for Gaussian/Student-t. Both rank statistics plus Pearson are reported alongside (`corr.basis` says which one drives the verdict).
 
 **Tuning the verdict:**
 
@@ -427,7 +432,7 @@ report = fidelity_report(
     records,
     Employee,
     alpha=0.05,                  # significance level: field passes when p-value >= alpha
-    correlation_tolerance=0.15,  # max |observed_spearman - target| for a pair to pass
+    correlation_tolerance=0.15,  # max |observed rank stat - target| for a pair to pass
 )
 
 for field in report.fields:
