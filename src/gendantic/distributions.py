@@ -182,16 +182,21 @@ class Categorical(DistributionSpec):
                 f"Weights: {self.weights}"
             )
 
+    def _normalised_probabilities(self) -> NDArray[Any]:
+        # __post_init__ only requires the weights to sum to ~1.0 (within 0.01),
+        # but numpy's samplers demand they sum to exactly 1.0, so renormalise
+        # here. This also keeps cumulative sums ending at exactly 1.0.
+        probabilities = np.asarray(list(self.weights.values()), dtype=float)
+        return np.asarray(probabilities / probabilities.sum())
+
     def sample(self, count: int, rng: np.random.Generator) -> NDArray[Any]:
         categories = list(self.weights.keys())
-        probabilities = list(self.weights.values())
-        return rng.choice(categories, size=count, p=probabilities)
+        return rng.choice(categories, size=count, p=self._normalised_probabilities())
 
     def quantile(self, u: NDArray[Any]) -> NDArray[Any]:
         # For categorical, we use the inverse CDF approach
         categories = list(self.weights.keys())
-        probabilities = list(self.weights.values())
-        cumsum = np.cumsum(probabilities)
+        cumsum = np.cumsum(self._normalised_probabilities())
         indices = np.searchsorted(cumsum, u)
         indices = np.clip(indices, 0, len(categories) - 1)
         return np.array([categories[i] for i in indices])
@@ -202,7 +207,7 @@ class Categorical(DistributionSpec):
         # so this exists for interface symmetry; goodness-of-fit uses observed
         # category frequencies directly rather than this CDF.
         categories = list(self.weights.keys())
-        cumsum = np.cumsum(list(self.weights.values()))
+        cumsum = np.cumsum(self._normalised_probabilities())
         index_of = {category: i for i, category in enumerate(categories)}
         return np.array([cumsum[index_of[value]] for value in x])
 

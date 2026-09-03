@@ -84,8 +84,13 @@ def edge_param(family: str, corr: float) -> float:
     if family in (CopulaType.GAUSSIAN, CopulaType.STUDENT_T):
         return corr
     if family == CopulaType.CLAYTON:
+        # tau -> 1 sends theta -> inf (comonotonicity); clamp just below 1 so a
+        # target of exactly 1.0 yields a large-but-finite theta instead of
+        # dividing by zero.
+        corr = min(corr, 1.0 - 1e-6)
         return 2.0 * corr / (1.0 - corr)
     if family == CopulaType.GUMBEL:
+        corr = min(corr, 1.0 - 1e-6)
         return 1.0 / (1.0 - corr)
     if family == CopulaType.FRANK:
         return _frank_theta_from_tau(corr)

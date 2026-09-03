@@ -38,6 +38,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Student-t conditional (copula h-inverse) now uses `df+1` for the inner
   quantile, fixing the conditional-sampling round-trip.
+- `Categorical` weights that sum to only ~1.0 (within the accepted 0.01
+  tolerance) are now renormalised internally, so they no longer crash numpy's
+  sampler, which requires probabilities summing to exactly 1.0.
+- Clayton/Gumbel copulas with a target correlation of exactly 1.0 no longer
+  divide by zero: the parameter is clamped just below the singularity to a
+  large-but-finite value (approaching comonotonicity).
+- `generate_synthetic_data_batch` now shares a single concurrency budget across
+  all contexts instead of giving each context its own, so the total in-flight
+  LLM calls stays within `max_concurrency` rather than reaching
+  `len(contexts) * max_concurrency`.
 
 ## [0.1.0] - 2026-09-03
 

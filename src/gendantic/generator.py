@@ -64,6 +64,22 @@ def _run_coro(coro: Coroutine[Any, Any, _T]) -> _T:
     return _sync_loop.run_until_complete(coro)
 
 
+def _resolve_max_concurrency(max_concurrency: int | None) -> int:
+    """Resolve the LLM concurrency cap: explicit arg, else env var, else default.
+
+    ``int()`` raises a clear ValueError if the env var isn't numeric. Used by
+    both the single-request and batch paths so they share one resolution rule.
+    """
+    if max_concurrency is None:
+        env_value = os.getenv("GENDANTIC_MAX_CONCURRENCY")
+        max_concurrency = (
+            int(env_value) if env_value else _DEFAULT_MAX_CONCURRENT_LLM_CALLS
+        )
+    if max_concurrency < 1:
+        raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}.")
+    return max_concurrency
+
+
 async def generate_synthetic_data(
     model_class: type[BaseModel],
     count: int = 10,
@@ -142,8 +158,11 @@ async def generate_synthetic_data_batch(
         contexts: List of contexts for different batches
         count: Number of records per batch
         seed: Random seed for reproducible sampling of distribution fields
-        max_concurrency: Maximum concurrent LLM field-generation calls per
-            context batch (see :func:`generate_synthetic_data`). Defaults to 8.
+        max_concurrency: Maximum concurrent LLM field-generation calls across
+            the whole batch (see :func:`generate_synthetic_data`). All contexts
+            share this single budget rather than each getting its own, so the
+            total in-flight calls stays bounded regardless of context count.
+            Defaults to 8.
 
     Returns:
         List of lists, each containing model instances for one context
@@ -153,10 +172,19 @@ async def generate_synthetic_data_batch(
         batches = await generate_synthetic_data_batch(Employee, contexts, count=20)
     """
 
+    # One semaphore shared across every context so the batch's total in-flight
+    # LLM calls stay within the cap (a per-context semaphore would let the true
+    # concurrency reach len(contexts) * max_concurrency).
+    semaphore = asyncio.Semaphore(_resolve_max_concurrency(max_concurrency))
     tasks = [
-        generate_synthetic_data(
-            model_class, count, context=context, seed=seed,
-            max_concurrency=max_concurrency,
+        _generate_with_distribution_sampling(
+            model_class,
+            count,
+            context
+            if context != "general"
+            else f"Modern business using {model_class.__name__} data model",
+            seed,
+            semaphore=semaphore,
         )
         for context in contexts
     ]
@@ -213,6 +241,7 @@ async def _generate_with_distribution_sampling(
     prefilled: list[dict[str, Any]] | None = None,
     relational_context: list[dict[str, Any]] | None = None,
     max_concurrency: int | None = None,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> list[BaseModel]:
     """
     Generate data using numpy sampling for distribution fields and LLM for the rest.
@@ -234,16 +263,11 @@ async def _generate_with_distribution_sampling(
     is shown to the LLM as context so generated text is coherent with the
     related rows, but it is never stored as a field on the record itself.
     """
-    # Concurrency cap: explicit argument wins, else the env var, else the
-    # default. ``int()`` raises a clear ValueError if the env var isn't numeric.
-    if max_concurrency is None:
-        env_value = os.getenv("GENDANTIC_MAX_CONCURRENCY")
-        max_concurrency = (
-            int(env_value) if env_value else _DEFAULT_MAX_CONCURRENT_LLM_CALLS
-        )
-    if max_concurrency < 1:
-        raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}.")
-    resolved_concurrency = max_concurrency
+    # Concurrency cap. A caller (e.g. the batch path) may pass a pre-built
+    # semaphore to share one budget across requests; otherwise build one from
+    # the resolved cap (explicit argument, else env var, else default).
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_resolve_max_concurrency(max_concurrency))
 
     # 1. Extract distribution specs from Annotated types (with type info for proper casting)
     dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
@@ -283,7 +307,7 @@ async def _generate_with_distribution_sampling(
             fields_to_generate,
             context,
             relational_context=batch_relational_context,
-            max_concurrency=resolved_concurrency,
+            semaphore=semaphore,
         )
         return _merge_records(partial_records, llm_outputs)
 
@@ -354,7 +378,7 @@ async def _generate_remaining_fields(
     context: str,
     batch_size: int = 15,
     relational_context: list[dict[str, Any]] | None = None,
-    max_concurrency: int = _DEFAULT_MAX_CONCURRENT_LLM_CALLS,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> list[dict[str, Any]]:
     """
     Use LLM to generate the remaining fields not covered by distributions.
@@ -414,10 +438,12 @@ async def _generate_remaining_fields(
     ]
 
     # Bound how many batch calls are in flight at once. The semaphore is created
-    # per request so it binds to the event loop actually driving this call (the
-    # sync wrappers reuse one loop, async callers bring their own), avoiding the
-    # cross-loop pitfalls of a module-level semaphore.
-    semaphore = asyncio.Semaphore(max_concurrency)
+    # per request (or shared across a batch by the caller) so it binds to the
+    # event loop actually driving this call (the sync wrappers reuse one loop,
+    # async callers bring their own), avoiding the cross-loop pitfalls of a
+    # module-level semaphore.
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_DEFAULT_MAX_CONCURRENT_LLM_CALLS)
 
     async def generate_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prompt = load_prompt("partial_record_generation").format(
