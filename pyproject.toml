@@ -75,8 +75,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "N806", "B017"]
-"example.py" = ["N806", "S101"]
-"examples/*" = ["S101"]
+"examples/*" = ["S101", "N806"]
 "src/gendantic/model_generator.py" = ["S102"]  # exec() is secured via AST validation
 
 [dependency-groups]
