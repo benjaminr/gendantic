@@ -85,6 +85,25 @@ class TestDistributionSpecs:
         with pytest.raises(ValueError, match="must sum to 1.0"):
             Categorical(weights={"A": 0.3, "B": 0.3})  # Sums to 0.6
 
+    def test_categorical_weights_within_tolerance_are_renormalised(self):
+        """Weights that only sum to ~1.0 (allowed) must still sample/quantile.
+
+        numpy's sampler requires probabilities that sum to exactly 1.0, so a
+        spec accepted within the 0.01 tolerance would otherwise crash at sample
+        time. The spec renormalises internally.
+        """
+        # Sums to 0.995 -- inside the 0.01 tolerance, but not exactly 1.0.
+        dist = Categorical(weights={"A": 0.4, "B": 0.3, "C": 0.295})
+        rng = np.random.default_rng(0)
+
+        samples = dist.sample(500, rng)
+        assert len(samples) == 500
+        assert set(np.unique(samples)) <= {"A", "B", "C"}
+
+        # quantile round-trip over the full unit interval hits every category.
+        q = dist.quantile(np.array([0.0, 0.5, 0.999]))
+        assert set(q) <= {"A", "B", "C"}
+
     def test_lognormal_distribution(self):
         """Test LogNormal distribution spec."""
         dist = LogNormal(mean=10.8, sigma=0.5)  # median ~50000

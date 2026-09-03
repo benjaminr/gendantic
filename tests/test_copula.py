@@ -83,6 +83,16 @@ def test_degenerate_param_is_independence(family) -> None:
     assert np.allclose(cp.hinv(family, w, u, param), w)
 
 
+@pytest.mark.parametrize("family", [C.CLAYTON, C.GUMBEL])
+def test_archimedean_edge_param_at_perfect_correlation_is_finite(family) -> None:
+    # corr == 1.0 sends theta -> inf for Clayton/Gumbel (1 - corr == 0); the
+    # param must be clamped to a large-but-finite value instead of dividing by
+    # zero (which used to raise ZeroDivisionError / produce inf).
+    param = cp.edge_param(family, 1.0)
+    assert np.isfinite(param)
+    assert param > 0.0
+
+
 @pytest.mark.parametrize("tau", [0.6, 0.3, -0.3, -0.6])
 def test_frank_theta_from_tau_round_trips(tau) -> None:
     theta = cp.edge_param(C.FRANK, tau)

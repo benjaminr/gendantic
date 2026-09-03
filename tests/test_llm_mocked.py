@@ -8,6 +8,7 @@ requiring a live LiteLLM proxy. The single seam we mock is
 """
 
 import asyncio
+from collections.abc import Callable
 from typing import Annotated, Any
 from unittest.mock import AsyncMock
 
@@ -35,44 +36,48 @@ class Employee(BaseModel):
     salary: Annotated[float, Normal(mean=75000, std=20000)]
 
 
-async def _run_and_measure_peak_concurrency(
-    patch_clients: Any, count: int, max_concurrency: int | None = None
-) -> int:
-    """Generate ``count`` LLM-only records and return the peak in-flight calls.
+class _OnlyLLM(BaseModel):
+    name: str  # no distribution fields -> every batch is an LLM call
 
-    The mock client increments a counter while each field-generation call is
-    "in flight" (held open by a short sleep) so overlapping calls are
-    observable, and records the high-water mark.
+
+def _counting_client() -> tuple[AsyncMock, Callable[[], int]]:
+    """A mock LLM client that tracks the peak number of in-flight field calls.
+
+    Each field-generation call holds its slot open with a short sleep so
+    overlapping calls are observable, recording the high-water mark; analysis
+    calls pass straight through untracked. Returns the client and a getter for
+    the peak.
     """
-
-    class OnlyLLM(BaseModel):
-        name: str  # no distribution fields -> every batch is an LLM call
-
-    inflight = 0
-    peak = 0
+    state = {"inflight": 0, "peak": 0}
 
     async def gen(
         schema: dict[str, Any], prompt: str, count: int = 1
     ) -> list[dict[str, Any]]:
-        nonlocal inflight, peak
         if is_analysis_call(schema):
             return [ANALYSIS]
-        inflight += 1
-        peak = max(peak, inflight)
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
         await asyncio.sleep(0.01)  # hold the slot so overlap is observable
-        inflight -= 1
+        state["inflight"] -= 1
         return [{"name": f"n{i}"} for i in range(count)]
 
     client = AsyncMock()
     client.generate_structured = AsyncMock(side_effect=gen)
+    return client, lambda: state["peak"]
 
+
+async def _run_and_measure_peak_concurrency(
+    patch_clients: Any, count: int, max_concurrency: int | None = None
+) -> int:
+    """Generate ``count`` LLM-only records and return the peak in-flight calls."""
+    client, peak = _counting_client()
     with patch_clients(client):
         rows = await generate_synthetic_data(
-            OnlyLLM, count=count, seed=1, max_concurrency=max_concurrency
+            _OnlyLLM, count=count, seed=1, max_concurrency=max_concurrency
         )
 
     assert len(rows) == count
-    return peak
+    return peak()
 
 
 @pytest.mark.asyncio
@@ -193,6 +198,28 @@ async def test_explicit_argument_overrides_env_var(
 
     assert peak > 2  # the env-var cap of 2 was overridden upward
     assert peak <= 5  # by the explicit argument
+
+
+@pytest.mark.asyncio
+async def test_batch_shares_one_concurrency_budget_across_contexts(patch_clients) -> None:
+    """All contexts in a batch share a single cap, not one semaphore each.
+
+    With a per-context semaphore the true peak could reach
+    len(contexts) * max_concurrency; the shared budget must keep it at the cap.
+    """
+    client, peak = _counting_client()
+    with patch_clients(client):
+        batches = await generate_synthetic_data_batch(
+            _OnlyLLM,
+            contexts=["a", "b", "c", "d"],
+            count=100,
+            seed=1,
+            max_concurrency=3,
+        )
+
+    assert len(batches) == 4
+    assert peak() > 1  # contexts really do overlap
+    assert peak() <= 3  # shared budget, not 3 per context (which would allow 12)
 
 
 @pytest.mark.asyncio
