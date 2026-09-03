@@ -1,9 +1,11 @@
-"""Offline tests for relational (multi-model) generation with a mocked client."""
+"""Offline tests for relational (multi-model) generation with a mocked client.
 
-import json
-from contextlib import ExitStack, contextmanager
-from typing import Annotated, Any, Iterator
-from unittest.mock import AsyncMock, patch
+The mocked LLM seam is provided by the ``make_client`` / ``patch_clients``
+fixtures in conftest.py; ``fake_values`` below is the default field-generation
+callback returning ``"<prop>-<i>"`` for every requested property.
+"""
+
+from typing import Annotated, Any
 
 import pytest
 from pydantic import BaseModel
@@ -18,50 +20,11 @@ from gendantic import (
 )
 from gendantic.relational import _resolve_generation_order
 
-_ANALYSIS = {
-    "model_analysis": {
-        "purpose": "test",
-        "domain": "testing",
-        "use_case": "unit-test",
-        "data_patterns": "synthetic",
-    },
-    "generation_guidance": {
-        "overall_strategy": "s",
-        "field_relationships": "r",
-        "data_quality_approach": "q",
-        "cultural_considerations": "c",
-    },
-}
 
-
-def _is_analysis_call(schema: dict[str, Any]) -> bool:
-    return "model_analysis" in json.dumps(schema)
-
-
-def make_fake_client() -> Any:
+def fake_values(schema: dict[str, Any], prompt: str, count: int) -> list[dict[str, Any]]:
     """Return LLM-field values for whatever properties the schema requests."""
-
-    def gen(
-        schema: dict[str, Any], prompt: str, count: int = 1
-    ) -> list[dict[str, Any]]:
-        if _is_analysis_call(schema):
-            return [_ANALYSIS]
-        props = list(schema["items"]["properties"].keys())
-        return [{p: f"{p}-{i}" for p in props} for i in range(count)]
-
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    return client
-
-
-@contextmanager
-def patch_clients(client: Any) -> Iterator[None]:
-    with ExitStack() as stack:
-        for mod in ("generator", "llm_driven_analyser", "model_generator"):
-            stack.enter_context(
-                patch(f"gendantic.{mod}.get_client", return_value=client)
-            )
-        yield
+    props = list(schema["items"]["properties"].keys())
+    return [{p: f"{p}-{i}" for p in props} for i in range(count)]
 
 
 class Customer(BaseModel):
@@ -76,8 +39,8 @@ class Order(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_referential_integrity_and_counts() -> None:
-    with patch_clients(make_fake_client()):
+async def test_referential_integrity_and_counts(make_client, patch_clients) -> None:
+    with patch_clients(make_client(fake_values)):
         dataset = await generate_dataset({Customer: 10, Order: 40}, seed=42)
 
     customers = dataset[Customer]
@@ -92,9 +55,9 @@ async def test_referential_integrity_and_counts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_order_is_topological() -> None:
+async def test_generation_order_is_topological(make_client, patch_clients) -> None:
     """Child declared first still generates after its parent."""
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         dataset = await generate_dataset({Order: 20, Customer: 5}, seed=1)
 
     customer_ids = {c.id for c in dataset[Customer]}
@@ -102,21 +65,15 @@ async def test_generation_order_is_topological() -> None:
 
 
 @pytest.mark.asyncio
-async def test_primary_keys_not_asked_of_llm() -> None:
+async def test_primary_keys_not_asked_of_llm(make_client, patch_clients) -> None:
     seen: list[list[str]] = []
 
-    def gen(
-        schema: dict[str, Any], prompt: str, count: int = 1
-    ) -> list[dict[str, Any]]:
-        if _is_analysis_call(schema):
-            return [_ANALYSIS]
+    def fields(schema: dict[str, Any], prompt: str, count: int) -> list[dict[str, Any]]:
         props = sorted(schema["items"]["properties"].keys())
         seen.append(props)
         return [{p: f"{p}{i}" for p in props} for i in range(count)]
 
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    with patch_clients(client):
+    with patch_clients(make_client(fields)):
         await generate_dataset({Customer: 3, Order: 3}, seed=7)
 
     # Customer only needs 'name' from the LLM; Order has no LLM fields at all
@@ -126,7 +83,7 @@ async def test_primary_keys_not_asked_of_llm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_foreign_key_context_passed_to_llm() -> None:
+async def test_foreign_key_context_passed_to_llm(make_client, patch_clients) -> None:
     """A child's LLM prompt includes the attributes of its referenced parent."""
 
     class Review(BaseModel):
@@ -136,18 +93,12 @@ async def test_foreign_key_context_passed_to_llm() -> None:
 
     prompts: list[str] = []
 
-    def gen(
-        schema: dict[str, Any], prompt: str, count: int = 1
-    ) -> list[dict[str, Any]]:
-        if _is_analysis_call(schema):
-            return [_ANALYSIS]
+    def fields(schema: dict[str, Any], prompt: str, count: int) -> list[dict[str, Any]]:
         prompts.append(prompt)
         props = list(schema["items"]["properties"].keys())
         return [{p: f"{p}-{i}" for p in props} for i in range(count)]
 
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    with patch_clients(client):
+    with patch_clients(make_client(fields)):
         await generate_dataset({Customer: 3, Review: 5}, seed=1)
 
     # The Review prompt (generating 'comment') should carry its referenced
@@ -164,12 +115,12 @@ async def test_foreign_key_context_passed_to_llm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uuid_primary_key_strategy() -> None:
+async def test_uuid_primary_key_strategy(make_client, patch_clients) -> None:
     class Doc(BaseModel):
         id: Annotated[str, PrimaryKey(strategy="uuid")]
         title: str
 
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         dataset = await generate_dataset({Doc: 5}, seed=3)
 
     ids = [d.id for d in dataset[Doc]]
@@ -177,7 +128,7 @@ async def test_uuid_primary_key_strategy() -> None:
     assert all(isinstance(i, str) and len(i) == 32 for i in ids)
 
 
-def test_self_reference_via_string_forward_ref() -> None:
+def test_self_reference_via_string_forward_ref(make_client, patch_clients) -> None:
     """A model can reference itself using a string forward reference."""
 
     class Employee(BaseModel):
@@ -186,7 +137,7 @@ def test_self_reference_via_string_forward_ref() -> None:
             int | None, ForeignKey("Employee", nullable=True, null_probability=0.3)
         ] = None
 
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         dataset = generate_dataset_sync({Employee: 15}, seed=4)
 
     employees = dataset[Employee]
@@ -197,14 +148,14 @@ def test_self_reference_via_string_forward_ref() -> None:
 
 
 @pytest.mark.asyncio
-async def test_nullable_foreign_key() -> None:
+async def test_nullable_foreign_key(make_client, patch_clients) -> None:
     class Ticket(BaseModel):
         id: Annotated[int, PrimaryKey()]
         customer_id: Annotated[
             int | None, ForeignKey(Customer, nullable=True, null_probability=0.5)
         ] = None
 
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         dataset = await generate_dataset({Customer: 5, Ticket: 60}, seed=11)
 
     values = [t.customer_id for t in dataset[Ticket]]
@@ -215,18 +166,18 @@ async def test_nullable_foreign_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_reproducible() -> None:
-    with patch_clients(make_fake_client()):
+async def test_seed_reproducible(make_client, patch_clients) -> None:
+    with patch_clients(make_client(fake_values)):
         a = await generate_dataset({Customer: 8, Order: 20}, seed=99)
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         b = await generate_dataset({Customer: 8, Order: 20}, seed=99)
 
     assert [o.customer_id for o in a[Order]] == [o.customer_id for o in b[Order]]
 
 
 @pytest.mark.asyncio
-async def test_missing_parent_raises() -> None:
-    with patch_clients(make_fake_client()):
+async def test_missing_parent_raises(make_client, patch_clients) -> None:
+    with patch_clients(make_client(fake_values)):
         with pytest.raises(ValueError, match="not included in the dataset"):
             await generate_dataset({Order: 5})  # Customer missing
 
@@ -247,7 +198,7 @@ def test_cyclic_dependency_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_composite_primary_key_join_table() -> None:
+async def test_composite_primary_key_join_table(make_client, patch_clients) -> None:
     """A join table whose PK is its two foreign keys stays referentially sound."""
 
     class Prod(BaseModel):
@@ -262,7 +213,7 @@ async def test_composite_primary_key_join_table() -> None:
             ForeignKeySpec(columns="product_id", model="Prod"),
         ]
 
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         dataset = await generate_dataset(
             {Customer: 5, Prod: 4, OrderItem: 12}, seed=1
         )
@@ -280,7 +231,9 @@ async def test_composite_primary_key_join_table() -> None:
 
 
 @pytest.mark.asyncio
-async def test_composite_key_caps_at_available_combinations() -> None:
+async def test_composite_key_caps_at_available_combinations(
+    make_client, patch_clients
+) -> None:
     """Requesting more join rows than distinct combinations caps the count."""
 
     class Prod(BaseModel):
@@ -292,7 +245,7 @@ async def test_composite_key_caps_at_available_combinations() -> None:
         __primary_key__ = ("order_id", "product_id")
         __foreign_keys__ = [ForeignKeySpec(columns="product_id", model="Prod")]
 
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         # 2 customers x 2 products = 4 possible distinct pairs, but 10 requested.
         dataset = await generate_dataset({Customer: 2, Prod: 2, OrderItem: 10}, seed=2)
 
@@ -303,7 +256,9 @@ async def test_composite_key_caps_at_available_combinations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_composite_foreign_key_to_composite_primary_key() -> None:
+async def test_composite_foreign_key_to_composite_primary_key(
+    make_client, patch_clients
+) -> None:
     """A child can reference a parent's composite primary key across two columns."""
 
     class Building(BaseModel):
@@ -322,7 +277,7 @@ async def test_composite_foreign_key_to_composite_primary_key() -> None:
             )
         ]
 
-    with patch_clients(make_fake_client()):
+    with patch_clients(make_client(fake_values)):
         dataset = await generate_dataset({Building: 6, Room: 20}, seed=3)
 
     buildings = {(b.site, b.floor) for b in dataset[Building]}
@@ -332,8 +287,8 @@ async def test_composite_foreign_key_to_composite_primary_key() -> None:
     assert len({r.id for r in rooms}) == 20  # surrogate PK still unique
 
 
-def test_sync_wrapper_and_to_dataframes() -> None:
-    with patch_clients(make_fake_client()):
+def test_sync_wrapper_and_to_dataframes(make_client, patch_clients) -> None:
+    with patch_clients(make_client(fake_values)):
         dataset = generate_dataset_sync({Customer: 4, Order: 6}, seed=5)
 
     frames = dataset.to_dataframes()

@@ -5,10 +5,7 @@ so these run without a real Postgres server. LLM fields are filled by a typed
 mock so no network calls are made.
 """
 
-import json
-from contextlib import ExitStack, contextmanager
-from typing import Any, Iterator
-from unittest.mock import AsyncMock, patch
+from typing import Any
 
 import pytest
 
@@ -35,21 +32,6 @@ from gendantic.db.reflect import _build_model  # noqa: E402
 from gendantic.distributions import Categorical, Normal  # noqa: E402
 from gendantic.relational import _primary_key_columns  # noqa: E402
 
-_ANALYSIS = {
-    "model_analysis": {
-        "purpose": "test",
-        "domain": "testing",
-        "use_case": "unit-test",
-        "data_patterns": "synthetic",
-    },
-    "generation_guidance": {
-        "overall_strategy": "s",
-        "field_relationships": "r",
-        "data_quality_approach": "q",
-        "cultural_considerations": "c",
-    },
-}
-
 
 def _typed_value(prop: dict[str, Any]) -> Any:
     """Return a value matching a JSON-schema property's declared type."""
@@ -66,28 +48,10 @@ def _typed_value(prop: dict[str, Any]) -> Any:
     return "text"
 
 
-def make_typed_client() -> Any:
-    """A fake LLM client returning type-correct values for requested fields."""
-
-    def gen(schema: dict[str, Any], prompt: str, count: int = 1) -> list[dict]:
-        if "model_analysis" in json.dumps(schema):
-            return [_ANALYSIS]
-        props = schema["items"]["properties"]
-        return [{name: _typed_value(p) for name, p in props.items()} for _ in range(count)]
-
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-    return client
-
-
-@contextmanager
-def patch_clients(client: Any) -> Iterator[None]:
-    with ExitStack() as stack:
-        for mod in ("generator", "llm_driven_analyser", "model_generator"):
-            stack.enter_context(
-                patch(f"gendantic.{mod}.get_client", return_value=client)
-            )
-        yield
+def typed_values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+    """Field-generation callback returning type-correct values per property."""
+    props = schema["items"]["properties"]
+    return [{name: _typed_value(p) for name, p in props.items()} for _ in range(count)]
 
 
 def _make_engine() -> Any:
@@ -148,12 +112,12 @@ def test_reflect_detects_keys_including_composite_join_table() -> None:
     assert pk_fields == ["order_id", "product_id"]
 
 
-def test_round_trip_generate_and_load() -> None:
+def test_round_trip_generate_and_load(make_client, patch_clients) -> None:
     engine = _make_engine()
     _create_shop_schema(engine)
     models = reflect_schema(engine)
 
-    with patch_clients(make_typed_client()):
+    with patch_clients(make_client(typed_values)):
         dataset = generate_dataset_sync(
             {
                 models["customers"]: 8,

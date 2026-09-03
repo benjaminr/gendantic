@@ -637,7 +637,7 @@ uv sync --extra notebooks
 ```bash
 git clone https://github.com/benjaminr/gendantic
 cd gendantic
-uv sync --extra dev
+uv sync  # installs the default 'dev' dependency group
 
 # Run tests
 uv run pytest
