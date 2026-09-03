@@ -1,8 +1,6 @@
 import asyncio
-import inspect
 import json
 import logging
-import re
 from collections.abc import Coroutine
 from typing import Any, List, TypeVar
 
@@ -269,8 +267,7 @@ async def _generate_remaining_fields(
         purpose = model_analysis.get("purpose", f"{model_class.__name__} data")
         domain = model_analysis.get("domain", "general")
 
-    # Extract validator requirements
-    critical_requirements = _extract_critical_validation_requirements(model_class)
+    # Extract validator docstrings to surface enforced constraints to the LLM
     validator_hints = _get_validator_hints_from_docstrings(model_class)
 
     # Build a schema for just the fields we need
@@ -312,7 +309,6 @@ async def _generate_remaining_fields(
             model_class=model_class.__name__,
             fields_to_generate=", ".join(sorted(fields_to_generate)),
             partial_records=json.dumps(batch, indent=2, default=str),
-            critical_requirements=critical_requirements,
             validator_hints=validator_hints,
             purpose=purpose,
             domain=domain,
@@ -416,52 +412,6 @@ def _get_validator_hints_from_docstrings(model_class: type[BaseModel]) -> str:
             hints.append(f"- **{name}**: {doc.strip()}")
 
     return "\n".join(hints) if hints else ""
-
-
-def _extract_critical_validation_requirements(model_class: type[BaseModel]) -> str:
-    """Extract critical validation requirements by examining the model."""
-
-    requirements = []
-
-    # Direct inspection of specific validation patterns
-    for name, doc in _iter_validators(model_class):
-        # Extract specific domain requirements from docstrings and method names
-        if "email" in name and ("company" in name or "domain" in doc.lower()):
-            if "@" in doc:
-                # Extract domain from docstring
-                domain_match = re.search(r"@([a-zA-Z0-9.-]+\.com)", doc)
-                if domain_match:
-                    domain = domain_match.group(1)
-                    requirements.append(
-                        f"- **CRITICAL EMAIL DOMAIN**: ALL emails must end with @{domain} (validator enforced)"
-                    )
-            elif "company" in doc.lower() or "work" in doc.lower():
-                requirements.append(
-                    "- **CRITICAL EMAIL DOMAIN**: ALL emails must use company domain (validator enforced)"
-                )
-
-        # Generic validator documentation
-        if doc and len(doc.strip()) > 10:
-            field_match = re.search(r"(\w+)", name)
-            field_name = field_match.group(1) if field_match else "field"
-            requirements.append(
-                f"- **{field_name.upper()} VALIDATION**: {doc.strip()}"
-            )
-
-    # Also check source code for validation error messages
-    try:
-        source = inspect.getsource(model_class)
-        if "@" in source and "ValueError" in source:
-            # Extract domain requirements from validation error messages
-            domain_matches = re.findall(r"@([a-zA-Z0-9.-]+\.com)", source)
-            for domain in set(domain_matches):
-                requirements.append(
-                    f"- **MANDATORY EMAIL DOMAIN**: ALL generated emails MUST use @{domain}"
-                )
-    except (OSError, TypeError):
-        pass
-
-    return "\n".join(requirements) if requirements else ""
 
 
 def _extract_correlations(model_class: type[BaseModel]) -> Correlations | None:
