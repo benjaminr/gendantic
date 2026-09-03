@@ -20,6 +20,7 @@ from gendantic import (
     Ordering,
     Range,
     Uniform,
+    fidelity_report,
     generate_synthetic_data_sync,
 )
 from gendantic.distributions import Categorical
@@ -235,6 +236,144 @@ def test_ordering_missing_field_raises() -> None:
         DistributionSampler(seed=0).sample_fields(
             _specs(OnlyOne), 10, constraints=Constraints(Ordering("start", "end"))
         )
+
+
+# --------------------------------------------------------------------------
+# Ordering constraints - resample method (marginal-preserving)
+# --------------------------------------------------------------------------
+
+
+class Career(BaseModel):
+    # Disjoint ranges, so the order always holds and no rejection is needed;
+    # each field keeps its own marginal exactly.
+    birth: Annotated[float, Uniform(0, 30)]
+    hire: Annotated[float, Uniform(30, 60)]
+    termination: Annotated[float, Uniform(60, 100)]
+    __constraints__ = Constraints(
+        Ordering("birth", "hire", "termination", method="resample")
+    )
+
+
+def test_resample_ordering_holds_and_preserves_marginals() -> None:
+    records = DistributionSampler(seed=1).sample_fields(
+        _specs(Career), 5000, constraints=Career.__constraints__
+    )
+    assert all(r["birth"] <= r["hire"] <= r["termination"] for r in records)
+
+    # Each field's mean stays at its own distribution's midpoint - the sort
+    # method would instead pull them to order statistics.
+    assert statistics.mean(r["birth"] for r in records) == pytest.approx(15, abs=1)
+    assert statistics.mean(r["hire"] for r in records) == pytest.approx(45, abs=1)
+    assert statistics.mean(r["termination"] for r in records) == pytest.approx(80, abs=1)
+
+
+def test_resample_ordering_passes_fidelity_when_sort_would_not() -> None:
+    # With disjoint marginals, resample preserves them, so each field still
+    # matches its declared Uniform (fidelity passes on the marginals).
+    records = DistributionSampler(seed=2).sample_fields(
+        _specs(Career), 4000, constraints=Career.__constraints__
+    )
+    report = fidelity_report(records, Career, alpha=0.01)
+    assert report.passed, report.summary()
+
+
+def test_resample_ordering_preserves_overlapping_marginals() -> None:
+    # Overlapping but well-separated Normals: a few draws violate and get
+    # redrawn, but the marginals stay put (unlike sort).
+    class Overlap(BaseModel):
+        low: Annotated[float, Normal(10, 1)]
+        high: Annotated[float, Normal(20, 1)]
+        __constraints__ = Constraints(Ordering("low", "high", method="resample"))
+
+    records = DistributionSampler(seed=3).sample_fields(
+        _specs(Overlap), 5000, constraints=Overlap.__constraints__
+    )
+    assert all(r["low"] <= r["high"] for r in records)
+    assert statistics.mean(r["low"] for r in records) == pytest.approx(10, abs=0.2)
+    assert statistics.mean(r["high"] for r in records) == pytest.approx(20, abs=0.2)
+
+
+def test_resample_ordering_raises_when_budget_exhausted() -> None:
+    # b is always ~5 and a always ~0, so requiring b <= a is essentially
+    # impossible; rejection can never satisfy it.
+    class Impossible(BaseModel):
+        a: Annotated[float, Normal(0, 0.001)]
+        b: Annotated[float, Normal(5, 0.001)]
+        __constraints__ = Constraints(Ordering("b", "a", method="resample"))
+
+    with pytest.raises(ValueError, match="could not be satisfied"):
+        DistributionSampler(seed=0).sample_fields(
+            _specs(Impossible), 200, constraints=Impossible.__constraints__
+        )
+
+
+def test_resample_ordering_rejects_conditional_field() -> None:
+    class WithConditional(BaseModel):
+        tier: Annotated[str, Categorical({"a": 0.5, "b": 0.5})]
+        x: Annotated[
+            float,
+            Conditional(on="tier", cases={"a": Normal(1, 1)}, default=Normal(2, 1)),
+        ]
+        y: Annotated[float, Uniform(0, 10)]
+        __constraints__ = Constraints(Ordering("x", "y", method="resample"))
+
+    with pytest.raises(ValueError, match="conditional field"):
+        DistributionSampler(seed=0).sample_fields(
+            _specs(WithConditional), 50, constraints=WithConditional.__constraints__
+        )
+
+
+def test_resample_ordering_rejects_correlated_field() -> None:
+    class WithCorrelation(BaseModel):
+        a: Annotated[float, Uniform(0, 10)]
+        b: Annotated[float, Uniform(0, 10)]
+        __correlations__ = Correlations(("a", "b", 0.5))
+        __constraints__ = Constraints(Ordering("a", "b", method="resample"))
+
+    with pytest.raises(ValueError, match="correlated field"):
+        DistributionSampler(seed=0).sample_fields(
+            _specs(WithCorrelation),
+            50,
+            correlations=WithCorrelation.__correlations__,
+            constraints=WithCorrelation.__constraints__,
+        )
+
+
+def test_resample_ordering_holds_on_converted_int_values() -> None:
+    # One field rounds to int; the guarantee must hold on the values the record
+    # exposes, not just the raw floats.
+    class Mixed(BaseModel):
+        start: Annotated[int, Uniform(0, 40)]
+        end: Annotated[float, Uniform(40, 80)]
+        __constraints__ = Constraints(Ordering("start", "end", method="resample"))
+
+    records = DistributionSampler(seed=5).sample_fields(
+        _specs(Mixed), 3000, constraints=Mixed.__constraints__
+    )
+    assert all(r["start"] <= r["end"] for r in records)
+
+
+def test_resample_ordering_is_deterministic() -> None:
+    a = DistributionSampler(seed=9).sample_fields(
+        _specs(Career), 500, constraints=Career.__constraints__
+    )
+    b = DistributionSampler(seed=9).sample_fields(
+        _specs(Career), 500, constraints=Career.__constraints__
+    )
+    assert a == b
+
+
+def test_ordering_method_validation_and_repr() -> None:
+    with pytest.raises(ValueError, match="method must be one of"):
+        Ordering("a", "b", method="bogus")
+
+    resample = Ordering("a", "b", method="resample")
+    assert resample != Ordering("a", "b")  # method participates in equality
+    assert repr(resample) == "Ordering('a', 'b', method='resample')"
+    # to_code round-trips the method
+    namespace = {"Constraints": Constraints, "Ordering": Ordering}
+    cons = Constraints(resample)
+    assert list(eval(cons.to_code(), namespace)) == [resample]  # noqa: S307
 
 
 # --------------------------------------------------------------------------

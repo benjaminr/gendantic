@@ -361,6 +361,30 @@ class Booking(BaseModel):
 
 `Ordering` accepts more than two fields (`Ordering("start", "review", "end")`) and each field must be distribution-sampled.
 
+#### Preserving marginals with `method="resample"`
+
+The default `method="sort"` always succeeds but reshapes marginals into order statistics (above). When your fields have **different, already-mostly-separated marginals** — e.g. `birth < hire < termination` — and you want each field to keep its own distribution, use `method="resample"`. It keeps each field's sampled value and redraws only the records that violate the order, repeating until the whole batch complies:
+
+```python
+from gendantic import Constraints, Ordering, Uniform
+
+class Career(BaseModel):
+    birth: Annotated[float, Uniform(min=0, max=30)]
+    hire: Annotated[float, Uniform(min=30, max=60)]
+    termination: Annotated[float, Uniform(min=60, max=100)]
+
+    __constraints__ = Constraints(
+        Ordering("birth", "hire", "termination", method="resample"),
+    )
+```
+
+Trade-offs and limits:
+
+- A hard order and *identical* marginals are mathematically incompatible (if `a <= b` always and both share a distribution, then `a = b`), so resample only preserves marginals when the marginals are compatible with the order. For fully overlapping marginals it degenerates to the same distortion as sorting.
+- If the marginals overlap so heavily that the rejection budget is exhausted, generation **raises** rather than return silently distorted data — separate the marginals or switch to `method="sort"`.
+- Resample fields must be **independent plain distributions** — a field that is also correlated (`__correlations__`) or conditional (`Conditional`) raises, since an independent redraw would break that structure.
+- The order is checked on the *converted* values (after int rounding / clipping), so the guarantee holds for the values the record actually exposes.
+
 ## Fidelity Validation
 
 gendantic samples distribution-annotated fields to match their spec. `fidelity_report()` lets you *verify* that promise: it compares a batch of generated records against the model's declared distributions and correlations and returns a structured, printable report. It never raises — you inspect the result and decide what to do.
@@ -751,12 +775,18 @@ Half-open interval `[min, max)` used as a `Conditional` case key. At least one b
 
 Class attribute (`__constraints__`) holding cross-field constraints.
 
-### `Ordering(*fields)`
+### `Ordering(*fields, method="sort")`
 
 Guarantees `fields` come out sorted ascending (ties allowed) per record. Requires at least two distinct, distribution-sampled field names.
 
+- `method="sort"` (default) — sort each row's values across the fields. Always succeeds; reshapes each field's marginal into an order statistic.
+- `method="resample"` — keep each field's own value and redraw only violating records. Preserves marginals when they're compatible with the order; raises if the rejection budget is exhausted; fields must be independent (not correlated or conditional).
+
 ```python
 __constraints__ = Constraints(Ordering("check_in", "check_out"))
+__constraints__ = Constraints(
+    Ordering("birth", "hire", "termination", method="resample")
+)
 ```
 
 ### `fidelity_report(records, model_class, *, alpha=0.05, correlation_tolerance=0.15)`

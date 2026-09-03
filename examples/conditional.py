@@ -140,9 +140,46 @@ def demo_ordering() -> None:
     print("  (min / median / max order statistics — the ordering trade-off)")
 
 
+class Career(BaseModel):
+    # Separated marginals: born, then hired, then left. method="resample"
+    # keeps each field's own distribution and only redraws the rare violating
+    # rows, so the per-field marginals are preserved (unlike sort).
+    birth_year: Annotated[float, Uniform(min=1960, max=1990)]
+    hire_year: Annotated[float, Uniform(min=1990, max=2010)]
+    exit_year: Annotated[float, Uniform(min=2010, max=2025)]
+
+    __constraints__ = Constraints(
+        Ordering("birth_year", "hire_year", "exit_year", method="resample"),
+    )
+
+
+def demo_resample_ordering() -> None:
+    careers = generate_synthetic_data_sync(Career, count=2000, seed=11)
+
+    violations = sum(
+        1
+        for c in careers
+        if not (c.birth_year <= c.hire_year <= c.exit_year)
+    )
+    print(f"\nResample ordering birth <= hire <= exit: {violations} violations "
+          f"/ {len(careers)}")
+
+    # Each field's mean stays at its own distribution's midpoint (1975 / 2000 /
+    # 2017), because resample preserves marginals rather than reshaping them.
+    means = {
+        "birth_year": statistics.mean(c.birth_year for c in careers),
+        "hire_year": statistics.mean(c.hire_year for c in careers),
+        "exit_year": statistics.mean(c.exit_year for c in careers),
+    }
+    print("Per-field means (each preserves its own Uniform midpoint):")
+    for name, value in means.items():
+        print(f"  {name:10s} {value:7.1f}")
+
+
 def main() -> None:
     demo_conditionals()
     demo_ordering()
+    demo_resample_ordering()
 
 
 if __name__ == "__main__":
