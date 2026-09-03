@@ -11,17 +11,11 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import MetaData, select
+
 from ..distributions import Categorical, DistributionSpec, Normal
 from ._engine import as_engine, qualified_name
 from .types import python_type_for
-
-try:
-    from sqlalchemy import MetaData, select
-except ImportError as exc:  # pragma: no cover - exercised via message assertion
-    raise ImportError(
-        "gendantic.db requires the 'db' extra. Install it with: "
-        "pip install 'gendantic[db]'"
-    ) from exc
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
