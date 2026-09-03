@@ -85,6 +85,7 @@ dev = [
     "pre-commit>=4.3.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
     "ruff>=0.12.10",
 ]
 
@@ -99,3 +100,10 @@ python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["gendantic"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
