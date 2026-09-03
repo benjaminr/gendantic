@@ -169,7 +169,8 @@ def fidelity_report(
             when its p-value is >= ``alpha`` (i.e. we fail to reject the null
             hypothesis that the samples came from the specified distribution).
         correlation_tolerance: Maximum absolute difference between the observed
-            Spearman correlation and the declared target for a pair to pass.
+            rank statistic (Kendall's tau for Archimedean copula families,
+            Spearman's rho otherwise) and the declared target for a pair to pass.
 
     Returns:
         A :class:`FidelityReport`. Never raises on statistical failure.

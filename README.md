@@ -658,7 +658,8 @@ distributions to it so the synthetic data resembles the real thing:
 ```python
 from gendantic.db import infer_distributions
 
-specs = infer_distributions(engine, "orders")   # {column: DistributionSpec}
+specs = infer_distributions("postgresql+psycopg://user:pw@host/shop", "orders")
+# {column: DistributionSpec}
 # numeric columns -> fitted Normal; low-cardinality columns -> weighted Categorical
 ```
 
@@ -706,7 +707,7 @@ export LITELLM_MODEL="gpt-4o"
 
 ## API Reference
 
-### `generate_synthetic_data(model_class, count, *, context, seed)`
+### `generate_synthetic_data(model_class, count, *, context, seed, max_concurrency)`
 
 Generate synthetic data records for a Pydantic model.
 
@@ -714,10 +715,11 @@ Generate synthetic data records for a Pydantic model.
 - `count`: Number of records to generate (default: 10)
 - `context`: Business context for more realistic generation
 - `seed`: Random seed for reproducible distribution sampling
+- `max_concurrency`: Max concurrent LLM field-generation calls (default: `GENDANTIC_MAX_CONCURRENCY`, else 8)
 
-### `generate_synthetic_data_batch(model_class, contexts, count, *, seed)`
+### `generate_synthetic_data_batch(model_class, contexts, count, *, seed, max_concurrency)`
 
-Generate multiple batches of synthetic data for different contexts concurrently.
+Generate multiple batches of synthetic data for different contexts concurrently. `max_concurrency` is a single budget shared across all contexts.
 
 ### `generate_dataset(counts, *, seed, context)`
 
@@ -805,7 +807,7 @@ Statistically check how well generated `records` match `model_class`'s declared 
 - `records`: Generated model instances or plain dicts
 - `model_class`: The model the records were generated for
 - `alpha`: Significance level; a field passes when its goodness-of-fit p-value is >= `alpha`
-- `correlation_tolerance`: Max absolute difference between observed Spearman correlation and the declared target for a pair to pass
+- `correlation_tolerance`: Max absolute difference between the observed rank statistic (Kendall's τ for Archimedean copula families, Spearman's ρ otherwise) and the declared target for a pair to pass
 
 Returns: `FidelityReport` with `.passed`, `.fields` (list of `FieldFidelity`), `.correlations` (list of `CorrelationFidelity`), and `.summary()`.
 
