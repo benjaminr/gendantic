@@ -44,7 +44,6 @@ class DistributionSampler:
         self,
         distribution_specs: (
             dict[str, DistributionSpec]
-            | dict[str, tuple[DistributionSpec, type]]
             | dict[str, tuple[DistributionSpec, type, dict[str, float | None]]]
         ),
         count: int,
@@ -57,9 +56,10 @@ class DistributionSampler:
         marginal distributions while enforcing the correlation/dependency structure.
 
         Args:
-            distribution_specs: Dict of {field: DistributionSpec} or
-                               {field: (DistributionSpec, target_type)} or
-                               {field: (DistributionSpec, target_type, constraints)}
+            distribution_specs: Either a plain ``{field: DistributionSpec}`` map
+                (types default to float, no constraints) or the fully-specified
+                ``{field: (DistributionSpec, target_type, constraints)}`` form
+                produced by ``extract_distribution_specs_with_types``.
             count: Number of records to sample
             correlations: Optional correlation structure
         """
@@ -70,34 +70,20 @@ class DistributionSampler:
         normalised_specs: dict[
             str, tuple[DistributionSpec, type, dict[str, float | None]]
         ] = {}
-        empty_constraints: dict[str, float | None] = {
-            "ge": None,
-            "le": None,
-            "gt": None,
-            "lt": None,
-        }
 
         for field_name, spec_or_tuple in distribution_specs.items():
             if isinstance(spec_or_tuple, tuple):
-                if len(spec_or_tuple) == 3:
-                    normalised_specs[field_name] = spec_or_tuple
-                elif len(spec_or_tuple) == 2:
-                    spec, target_type = spec_or_tuple
-                    normalised_specs[field_name] = (
-                        spec,
-                        target_type,
-                        empty_constraints.copy(),
-                    )
-                else:
+                if len(spec_or_tuple) != 3:
                     raise ValueError(
                         f"Unexpected tuple length for {field_name}: {len(spec_or_tuple)}"
                     )
+                normalised_specs[field_name] = spec_or_tuple
             else:
-                # Legacy format without type - default to float
+                # Plain spec without type/constraints - default to float, unclipped
                 normalised_specs[field_name] = (
                     spec_or_tuple,
                     float,
-                    empty_constraints.copy(),
+                    {"ge": None, "le": None, "gt": None, "lt": None},
                 )
 
         if correlations is None or len(correlations) == 0:
