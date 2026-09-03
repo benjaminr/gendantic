@@ -20,8 +20,11 @@ Conditional fields are checked *per group*: records are split by which case
 matched (on the discriminator value stored in the record) and each group is run
 against its own case spec, so a conditional field yields one result per branch.
 
-Correlations are checked with Spearman's rank correlation (what copulas
-actually control) as the verdict, with Pearson reported alongside.
+Correlations are checked with the rank statistic the copula family actually
+targets: Kendall's tau for the Archimedean families (Clayton, Gumbel, Frank),
+whose ``corr`` is a target tau, and Spearman's rho for Gaussian and Student-t,
+whose ``corr`` is a latent correlation that Spearman tracks closely. Both rank
+statistics plus Pearson are reported alongside so the verdict can be inspected.
 """
 
 from collections.abc import Callable, Sequence
@@ -33,11 +36,22 @@ from numpy.typing import NDArray
 from pydantic import BaseModel
 from scipy import stats
 
-from .distributions import Conditional, Correlations, DistributionSpec, Range
+from .distributions import (
+    Conditional,
+    CopulaType,
+    Correlations,
+    DistributionSpec,
+    Range,
+    truncate,
+)
 from .llm_driven_analyser import LLMDrivenModelAnalyser
 
 _CONTINUOUS = {"normal", "uniform", "lognormal", "exponential", "beta"}
 _DISCRETE = {"poisson", "binomial"}
+
+# Archimedean families interpret ``corr`` as a target Kendall's tau; the others
+# (Gaussian, Student-t) interpret it as a latent correlation tracked by Spearman.
+_KENDALL_COPULAS = {CopulaType.CLAYTON, CopulaType.GUMBEL, CopulaType.FRANK}
 
 
 @dataclass
@@ -66,8 +80,12 @@ class CorrelationFidelity:
     target: float
     observed_spearman: float
     observed_pearson: float
-    error: float  # |observed_spearman - target|
+    error: float  # |observed rank statistic - target|; see ``basis``
     passed: bool
+    observed_kendall: float = float("nan")
+    # Which rank statistic the verdict uses: "kendall" for Archimedean
+    # families (target is a Kendall's tau), "spearman" otherwise.
+    basis: str = "spearman"
 
 
 @dataclass
@@ -111,10 +129,14 @@ class FidelityReport:
             lines.append("Correlations:")
             for c in self.correlations:
                 mark = "ok " if c.passed else "XX "
+                stat = (
+                    f"kendall={c.observed_kendall:+.2f}"
+                    if c.basis == "kendall"
+                    else f"spearman={c.observed_spearman:+.2f}"
+                )
                 lines.append(
                     f"  [{mark}] {c.field1}~{c.field2}: target={c.target:+.2f} "
-                    f"spearman={c.observed_spearman:+.2f} "
-                    f"pearson={c.observed_pearson:+.2f} err={c.error:.2f}"
+                    f"{stat} pearson={c.observed_pearson:+.2f} err={c.error:.2f}"
                 )
 
         return "\n".join(lines)
@@ -152,14 +174,21 @@ def fidelity_report(
     Returns:
         A :class:`FidelityReport`. Never raises on statistical failure.
     """
-    all_specs = LLMDrivenModelAnalyser.extract_distribution_specs(model_class)
+    all_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
+        model_class
+    )
+    # Truncate bounded fields to the same window the sampler uses, so a field
+    # declared e.g. ``ge=0`` is compared against the truncated distribution it
+    # was actually sampled from rather than the full (untruncated) one.
     specs = {
-        name: spec
-        for name, spec in all_specs.items()
+        name: truncate(spec, target_type, constraints)
+        for name, (spec, target_type, constraints) in all_specs.items()
         if isinstance(spec, DistributionSpec)
     }
     conditionals = {
-        name: spec for name, spec in all_specs.items() if isinstance(spec, Conditional)
+        name: (spec, target_type, constraints)
+        for name, (spec, target_type, constraints) in all_specs.items()
+        if isinstance(spec, Conditional)
     }
     rows = [_as_dict(r) for r in records]
     report = FidelityReport(sample_size=len(rows))
@@ -173,16 +202,20 @@ def fidelity_report(
         column = [row[field_name] for row in rows]
         report.fields.append(_check_field(field_name, spec, column, alpha))
 
-    for field_name, cond in conditionals.items():
+    for field_name, (cond, target_type, constraints) in conditionals.items():
         if field_name not in rows[0] or cond.on not in rows[0]:
             continue
-        report.fields.extend(_check_conditional_field(field_name, cond, rows, alpha))
+        report.fields.extend(
+            _check_conditional_field(
+                field_name, cond, rows, alpha, target_type, constraints
+            )
+        )
 
     correlations = getattr(model_class, "__correlations__", None)
     if isinstance(correlations, Correlations):
-        for f1, f2, target, _copula in correlations:
+        for f1, f2, target, copula in correlations:
             result = _check_correlation(
-                f1, f2, target, specs, rows, correlation_tolerance
+                f1, f2, target, copula, specs, rows, correlation_tolerance
             )
             if result is not None:
                 report.correlations.append(result)
@@ -228,6 +261,8 @@ def _check_conditional_field(
     cond: Conditional,
     rows: list[dict[str, Any]],
     alpha: float,
+    target_type: type = float,
+    constraints: dict[str, float | None] | None = None,
 ) -> list[FieldFidelity]:
     """Goodness-of-fit per case branch of a conditional field.
 
@@ -251,10 +286,12 @@ def _check_conditional_field(
         grouped.setdefault(key, []).append(row[field_name])
         group_spec[key] = spec
 
+    bounds = constraints or {"ge": None, "le": None, "gt": None, "lt": None}
     results: list[FieldFidelity] = []
     for key, values in grouped.items():
         group = f"{cond.on}={'|'.join(sorted(labels.get(key, ['?'])))}"
-        result = _check_field(field_name, group_spec[key], values, alpha)
+        effective = truncate(group_spec[key], target_type, bounds)
+        result = _check_field(field_name, effective, values, alpha)
         result.group = group
         results.append(result)
 
@@ -404,15 +441,18 @@ def _check_correlation(
     field1: str,
     field2: str,
     target: float,
+    copula: str,
     specs: dict[str, DistributionSpec],
     rows: list[dict[str, Any]],
     tolerance: float,
 ) -> CorrelationFidelity | None:
     """Compare an observed correlation to its target, or None if uncheckable.
 
-    Pairs that reference a non-distribution field, a field absent from the
-    records, or a distribution that cannot be correlated (e.g. categorical)
-    are skipped - they are never correlated during generation.
+    The verdict uses the rank statistic the copula family targets: Kendall's
+    tau for Archimedean families (whose ``target`` is a tau) and Spearman's rho
+    otherwise. Pairs that reference a non-distribution field, a field absent
+    from the records, or a distribution that cannot be correlated (e.g.
+    categorical) are skipped - they are never correlated during generation.
     """
     for name in (field1, field2):
         spec = specs.get(name)
@@ -427,17 +467,23 @@ def _check_correlation(
     # Correlation is undefined when either column is constant; report it as a
     # (failing) NaN rather than triggering scipy/numpy divide-by-zero warnings.
     if np.std(x) == 0 or np.std(y) == 0:
-        spearman = pearson = float("nan")
+        spearman = pearson = kendall = float("nan")
     else:
         spearman = float(stats.spearmanr(x, y).statistic)
         pearson = float(np.corrcoef(x, y)[0, 1])
-    error = abs(spearman - target)
+        kendall = float(stats.kendalltau(x, y).statistic)
+
+    basis = "kendall" if copula in _KENDALL_COPULAS else "spearman"
+    observed = kendall if basis == "kendall" else spearman
+    error = abs(observed - target)
     return CorrelationFidelity(
         field1=field1,
         field2=field2,
         target=target,
         observed_spearman=spearman,
         observed_pearson=pearson,
+        observed_kendall=kendall,
+        basis=basis,
         error=error,
         passed=error <= tolerance,
     )
