@@ -599,6 +599,7 @@ patterns:
 
 | Example | LLM? | Shows |
 |---------|------|-------|
+| [`overview.py`](examples/overview.py) | yes | End-to-end tour: distributions, LLM-generated semantic fields, dynamic model generation from a description, seeded reproducibility, and context-aware generation |
 | [`llm_single_model.py`](examples/llm_single_model.py) | yes | Single model: a minimal text-only case, plus distributions correlated with a copula |
 | [`conditional.py`](examples/conditional.py) | no | Conditional distributions (categorical & numeric `Range` bins), chained dependencies, and cross-field `Ordering` constraints |
 | [`relational_quickstart.py`](examples/relational_quickstart.py) | no | Basic three-table relational generation with referential integrity |
