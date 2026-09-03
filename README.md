@@ -637,7 +637,10 @@ uv sync --extra notebooks
 ```bash
 git clone https://github.com/benjaminr/gendantic
 cd gendantic
-uv sync  # installs the default 'dev' dependency group
+# The 'dev' dependency group is installed by default. The db and pandas
+# extras are needed for the full test suite (test_db.py and the DataFrame
+# export tests); without them those tests are skipped.
+uv sync --extra db --extra pandas
 
 # Run tests
 uv run pytest

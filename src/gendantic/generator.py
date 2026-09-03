@@ -391,17 +391,29 @@ def _validate_and_convert(
     return validated_data
 
 
+def _iter_validators(model_class: type[BaseModel]) -> list[tuple[str, str]]:
+    """Yield ``(validator_name, docstring)`` for every validator on the model.
+
+    Pydantic v2 records validators on ``__pydantic_decorators__`` rather than as
+    attributes discoverable via ``dir()``.
+    """
+    decorators = model_class.__pydantic_decorators__
+    validators: list[tuple[str, str]] = []
+    for name, field_validator in decorators.field_validators.items():
+        validators.append((name, field_validator.func.__doc__ or ""))
+    for name, model_validator in decorators.model_validators.items():
+        validators.append((name, model_validator.func.__doc__ or ""))
+    return validators
+
+
 def _get_validator_hints_from_docstrings(model_class: type[BaseModel]) -> str:
     """Extract validator hints from model docstrings and validators."""
     hints = []
 
     # Check for field validators with specific docstrings
-    for attr_name in dir(model_class):
-        attr = getattr(model_class, attr_name)
-        if hasattr(attr, "__pydantic_validator__") or "validator" in attr_name:
-            doc = getattr(attr, "__doc__", "")
-            if doc:
-                hints.append(f"- **{attr_name}**: {doc.strip()}")
+    for name, doc in _iter_validators(model_class):
+        if doc:
+            hints.append(f"- **{name}**: {doc.strip()}")
 
     return "\n".join(hints) if hints else ""
 
@@ -412,41 +424,29 @@ def _extract_critical_validation_requirements(model_class: type[BaseModel]) -> s
     requirements = []
 
     # Direct inspection of specific validation patterns
-    for attr_name in dir(model_class):
-        attr = getattr(model_class, attr_name)
-
-        # Check for field validators
-        if (
-            hasattr(attr, "__pydantic_validator__")
-            or callable(attr)
-            and "validator" in attr_name
-        ):
-            doc = getattr(attr, "__doc__", "")
-
-            # Extract specific domain requirements from docstrings and method names
-            if "email" in attr_name and (
-                "company" in attr_name or "domain" in doc.lower()
-            ):
-                if "@" in doc:
-                    # Extract domain from docstring
-                    domain_match = re.search(r"@([a-zA-Z0-9.-]+\.com)", doc)
-                    if domain_match:
-                        domain = domain_match.group(1)
-                        requirements.append(
-                            f"- **CRITICAL EMAIL DOMAIN**: ALL emails must end with @{domain} (validator enforced)"
-                        )
-                elif "company" in doc.lower() or "work" in doc.lower():
+    for name, doc in _iter_validators(model_class):
+        # Extract specific domain requirements from docstrings and method names
+        if "email" in name and ("company" in name or "domain" in doc.lower()):
+            if "@" in doc:
+                # Extract domain from docstring
+                domain_match = re.search(r"@([a-zA-Z0-9.-]+\.com)", doc)
+                if domain_match:
+                    domain = domain_match.group(1)
                     requirements.append(
-                        "- **CRITICAL EMAIL DOMAIN**: ALL emails must use company domain (validator enforced)"
+                        f"- **CRITICAL EMAIL DOMAIN**: ALL emails must end with @{domain} (validator enforced)"
                     )
-
-            # Generic validator documentation
-            if doc and len(doc.strip()) > 10:
-                field_match = re.search(r"(\w+)", attr_name)
-                field_name = field_match.group(1) if field_match else "field"
+            elif "company" in doc.lower() or "work" in doc.lower():
                 requirements.append(
-                    f"- **{field_name.upper()} VALIDATION**: {doc.strip()}"
+                    "- **CRITICAL EMAIL DOMAIN**: ALL emails must use company domain (validator enforced)"
                 )
+
+        # Generic validator documentation
+        if doc and len(doc.strip()) > 10:
+            field_match = re.search(r"(\w+)", name)
+            field_name = field_match.group(1) if field_match else "field"
+            requirements.append(
+                f"- **{field_name.upper()} VALIDATION**: {doc.strip()}"
+            )
 
     # Also check source code for validation error messages
     try:

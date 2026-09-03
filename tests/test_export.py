@@ -1,8 +1,12 @@
 """Tests for the to_dataframe export helper."""
 
-from pydantic import BaseModel
+import pytest
 
-from gendantic import to_dataframe
+pytest.importorskip("pandas")  # to_dataframe requires the optional 'pandas' extra
+
+from pydantic import BaseModel  # noqa: E402
+
+from gendantic import to_dataframe  # noqa: E402
 
 
 class Row(BaseModel):
