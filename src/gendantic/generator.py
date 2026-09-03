@@ -16,6 +16,12 @@ logger = logging.getLogger("gendantic")
 
 _T = TypeVar("_T")
 
+# Maximum number of top-up rounds when regenerating records that failed
+# validation, before giving up and raising. Each round regenerates only the
+# current shortfall, so a non-systematic failure rate converges geometrically
+# and this cap is only reached when a validator rejects records persistently.
+_MAX_TOPUP_ROUNDS = 10
+
 # A single reusable event loop backs the synchronous wrappers. Using one
 # persistent loop (instead of ``asyncio.run``, which creates and tears down a
 # fresh loop per call) keeps litellm's cached async HTTP clients bound to a
@@ -202,41 +208,96 @@ async def _generate_with_distribution_sampling(
     correlations = _extract_correlations(model_class)
     constraints = _extract_constraints(model_class)
 
-    # 3. Sample distribution fields with numpy (using correlations if present)
-    sampler = DistributionSampler(seed=seed)
-    partial_records = sampler.sample_fields(
-        dist_specs, count, correlations=correlations, constraints=constraints
-    )
-
-    # 3a. Merge in any engine-prefilled fields (primary/foreign keys)
-    prefilled_fields: set[str] = set()
-    if prefilled is not None:
-        for record, extra in zip(partial_records, prefilled, strict=True):
-            record.update(extra)
-            prefilled_fields.update(extra.keys())
-
-    # 4. Identify fields that need LLM generation
+    # 3. One sampler for the whole call: top-up rounds continue its RNG stream
+    # rather than restarting it, so retries draw fresh (non-repeating) values
+    # while the result stays deterministic for a given seed.
     all_fields = set(model_class.model_fields.keys())
-    sampled_fields = set(dist_specs.keys()) | prefilled_fields
-    fields_to_generate = all_fields - sampled_fields
+    sampler = DistributionSampler(seed=seed)
 
-    if fields_to_generate:
-        # 4. LLM generates remaining fields with sampled values as context
+    async def build_raw(
+        n: int,
+        batch_prefilled: list[dict[str, Any]] | None,
+        batch_relational_context: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Sample ``n`` records, merge engine keys, and fill LLM fields."""
+        partial_records = sampler.sample_fields(
+            dist_specs, n, correlations=correlations, constraints=constraints
+        )
+        prefilled_fields: set[str] = set()
+        if batch_prefilled is not None:
+            for record, extra in zip(partial_records, batch_prefilled, strict=True):
+                record.update(extra)
+                prefilled_fields.update(extra.keys())
+        fields_to_generate = all_fields - (set(dist_specs.keys()) | prefilled_fields)
+        if not fields_to_generate:
+            return partial_records
         llm_outputs = await _generate_remaining_fields(
             model_class,
             partial_records,
             fields_to_generate,
             context,
-            relational_context=relational_context,
+            relational_context=batch_relational_context,
         )
-        # 5. Merge sampled + generated
-        records = _merge_records(partial_records, llm_outputs)
-    else:
-        # All fields covered by distributions - no LLM needed
-        records = partial_records
+        return _merge_records(partial_records, llm_outputs)
 
-    # 6. Validate and convert to Pydantic models
-    return _validate_and_convert(model_class, records)
+    # Relational path: primary/foreign keys are assigned per row by the engine
+    # and cannot be regenerated here, so we cannot top up. Dropping a row would
+    # break referential integrity (other tables' FKs may point at it), so any
+    # validation failure is fatal rather than silently returning fewer rows.
+    if prefilled is not None:
+        raw = await build_raw(count, prefilled, relational_context)
+        valid, failed = _validate_split(model_class, raw)
+        if failed:
+            raise ValueError(
+                f"{len(failed)} of {count} generated {model_class.__name__} "
+                "record(s) failed validation during relational generation; rows "
+                "cannot be dropped without breaking referential integrity. "
+                f"First error: {failed[0][1]}"
+            )
+        return valid
+
+    # Standalone path: top up to `count`, regenerating only the shortfall each
+    # round so validation failures don't silently shrink the batch.
+    valid_records: list[BaseModel] = []
+    total_failed = 0
+    rounds_used = 0
+    for _ in range(_MAX_TOPUP_ROUNDS):
+        need = count - len(valid_records)
+        if need <= 0:
+            break
+        rounds_used += 1
+        raw = await build_raw(need, None, None)
+        batch_valid, batch_failed = _validate_split(model_class, raw)
+        valid_records.extend(batch_valid)
+        total_failed += len(batch_failed)
+        if not batch_valid:
+            # A whole round produced nothing usable: the failure is systematic
+            # (e.g. a validator rejecting the generated shape), so further rounds
+            # would only burn LLM calls. Stop and report below.
+            break
+
+    if len(valid_records) < count:
+        if not valid_records:
+            raise ValueError(
+                f"No valid {model_class.__name__} records could be generated: every "
+                "record failed validation. Check the model's validators against the "
+                "sampled and generated values."
+            )
+        raise ValueError(
+            f"Could only generate {len(valid_records)} of {count} requested "
+            f"{model_class.__name__} records: records kept failing validation "
+            f"(gave up after {rounds_used} round(s)). Check the model's validators."
+        )
+
+    if total_failed:
+        logger.warning(
+            "Regenerated %d %s record(s) that failed validation to reach the "
+            "requested count of %d.",
+            total_failed,
+            model_class.__name__,
+            count,
+        )
+    return valid_records[:count]
 
 
 async def _generate_remaining_fields(
@@ -356,36 +417,23 @@ def _merge_records(
     return [{**s, **g} for s, g in zip(sampled, generated, strict=False)]
 
 
-def _validate_and_convert(
+def _validate_split(
     model_class: type[BaseModel], raw_data: list[dict[str, Any]]
-) -> list[BaseModel]:
-    """Validate and convert raw data to model instances."""
+) -> tuple[list[BaseModel], list[tuple[dict[str, Any], ValidationError]]]:
+    """Partition raw dicts into validated instances and ``(dict, error)`` failures.
 
-    validated_data = []
-    failures = 0
+    Never raises: the caller decides whether to top up, retry, or fail based on
+    how many records validated.
+    """
+    valid: list[BaseModel] = []
+    failed: list[tuple[dict[str, Any], ValidationError]] = []
     for item in raw_data:
         try:
-            instance = model_class(**item)
-            validated_data.append(instance)
+            valid.append(model_class(**item))
         except ValidationError as e:
-            failures += 1
+            failed.append((item, e))
             logger.debug("Validation error for item %r: %s", item, e)
-            continue
-
-    if not validated_data:
-        raise ValueError("No valid data was generated")
-
-    if failures:
-        logger.warning(
-            "%d of %d generated %s record(s) failed validation and were dropped; "
-            "returning %d valid record(s).",
-            failures,
-            len(raw_data),
-            model_class.__name__,
-            len(validated_data),
-        )
-
-    return validated_data
+    return valid, failed
 
 
 def _iter_validators(model_class: type[BaseModel]) -> list[tuple[str, str]]:

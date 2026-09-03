@@ -8,7 +8,7 @@ callback returning ``"<prop>-<i>"`` for every requested property.
 from typing import Annotated, Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from gendantic import (
     ForeignKey,
@@ -80,6 +80,27 @@ async def test_primary_keys_not_asked_of_llm(make_client, patch_clients) -> None
     # (id is PK, customer_id is FK, amount is a distribution).
     assert ["name"] in seen
     assert all("id" not in props and "customer_id" not in props for props in seen)
+
+
+@pytest.mark.asyncio
+async def test_relational_validation_failure_raises(make_client, patch_clients) -> None:
+    """A dropped row would break integrity, so relational generation raises.
+
+    Unlike standalone generation (which tops up), relational rows carry
+    engine-assigned keys that cannot be regenerated, so a validation failure is
+    fatal rather than silently returning a short, integrity-broken table.
+    """
+
+    class Tagged(BaseModel):
+        id: Annotated[int, PrimaryKey()]
+        label: str = Field(min_length=3)  # LLM field with a constraint
+
+    def too_short(schema: dict[str, Any], prompt: str, count: int) -> list[dict[str, Any]]:
+        return [{"label": "x"} for _ in range(count)]
+
+    with patch_clients(make_client(too_short)):
+        with pytest.raises(ValueError, match="referential integrity"):
+            await generate_dataset({Tagged: 5}, seed=1)
 
 
 @pytest.mark.asyncio

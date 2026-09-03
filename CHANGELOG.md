@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Generation now returns **exactly** the requested count: records that fail
+  Pydantic validation are regenerated (bounded top-up rounds) instead of being
+  silently dropped, so `generate_synthetic_data` no longer returns a short
+  batch. If records keep failing validation it raises a clear error. Relational
+  generation raises on any validation failure (rows carry engine-assigned keys
+  and cannot be dropped without breaking referential integrity).
+
 ## [0.1.0] - 2026-09-03
 
 Initial release.
