@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Coroutine
 from typing import Any, List, TypeVar
 
@@ -21,6 +22,15 @@ _T = TypeVar("_T")
 # current shortfall, so a non-systematic failure rate converges geometrically
 # and this cap is only reached when a validator rejects records persistently.
 _MAX_TOPUP_ROUNDS = 10
+
+# Default upper bound on in-flight LLM field-generation calls per generation
+# request. Records are batched (see ``_generate_remaining_fields``), and a large
+# ``count`` produces many batches; firing them all at once would hammer the
+# provider and risk rate-limit rejections. This caps how many run concurrently
+# while the rest wait on a semaphore. Callers can override it per call via the
+# ``max_concurrency`` argument, or deployment-wide via the
+# ``GENDANTIC_MAX_CONCURRENCY`` environment variable.
+_DEFAULT_MAX_CONCURRENT_LLM_CALLS = 8
 
 # A single reusable event loop backs the synchronous wrappers. Using one
 # persistent loop (instead of ``asyncio.run``, which creates and tears down a
@@ -60,6 +70,7 @@ async def generate_synthetic_data(
     *,
     context: str = "general",
     seed: int | None = None,
+    max_concurrency: int | None = None,
 ) -> list[BaseModel]:
     """
     Generate synthetic data records for a Pydantic model.
@@ -73,6 +84,13 @@ async def generate_synthetic_data(
         count: Number of records to generate
         context: Optional context about the intended use case for better generation
         seed: Random seed for reproducible sampling of distribution fields
+        max_concurrency: Maximum number of LLM field-generation calls in flight
+            at once. Larger ``count`` values are split into batches; this caps
+            how many batches run concurrently. Must be >= 1. Raise it to
+            generate faster against a provider that tolerates more concurrency,
+            or lower it to stay under stricter rate limits. When ``None``, falls
+            back to the ``GENDANTIC_MAX_CONCURRENCY`` environment variable, then
+            to a default of 8.
 
     Returns:
         List of model instances with synthetic data
@@ -103,7 +121,9 @@ async def generate_synthetic_data(
 
     if context == "general":
         context = f"Modern business using {model_class.__name__} data model"
-    return await _generate_with_distribution_sampling(model_class, count, context, seed)
+    return await _generate_with_distribution_sampling(
+        model_class, count, context, seed, max_concurrency=max_concurrency
+    )
 
 
 async def generate_synthetic_data_batch(
@@ -112,6 +132,7 @@ async def generate_synthetic_data_batch(
     count: int = 10,
     *,
     seed: int | None = None,
+    max_concurrency: int | None = None,
 ) -> List[list[BaseModel]]:
     """
     Generate multiple batches of synthetic data with different contexts concurrently.
@@ -121,6 +142,8 @@ async def generate_synthetic_data_batch(
         contexts: List of contexts for different batches
         count: Number of records per batch
         seed: Random seed for reproducible sampling of distribution fields
+        max_concurrency: Maximum concurrent LLM field-generation calls per
+            context batch (see :func:`generate_synthetic_data`). Defaults to 8.
 
     Returns:
         List of lists, each containing model instances for one context
@@ -131,7 +154,10 @@ async def generate_synthetic_data_batch(
     """
 
     tasks = [
-        generate_synthetic_data(model_class, count, context=context, seed=seed)
+        generate_synthetic_data(
+            model_class, count, context=context, seed=seed,
+            max_concurrency=max_concurrency,
+        )
         for context in contexts
     ]
     return await asyncio.gather(*tasks)
@@ -143,6 +169,7 @@ def generate_synthetic_data_sync(
     *,
     context: str = "general",
     seed: int | None = None,
+    max_concurrency: int | None = None,
 ) -> list[BaseModel]:
     """Synchronous wrapper around :func:`generate_synthetic_data`.
 
@@ -154,7 +181,10 @@ def generate_synthetic_data_sync(
         employees = generate_synthetic_data_sync(Employee, count=100, seed=42)
     """
     return _run_coro(
-        generate_synthetic_data(model_class, count, context=context, seed=seed)
+        generate_synthetic_data(
+            model_class, count, context=context, seed=seed,
+            max_concurrency=max_concurrency,
+        )
     )
 
 
@@ -164,10 +194,14 @@ def generate_synthetic_data_batch_sync(
     count: int = 10,
     *,
     seed: int | None = None,
+    max_concurrency: int | None = None,
 ) -> List[list[BaseModel]]:
     """Synchronous wrapper around :func:`generate_synthetic_data_batch`."""
     return _run_coro(
-        generate_synthetic_data_batch(model_class, contexts, count=count, seed=seed)
+        generate_synthetic_data_batch(
+            model_class, contexts, count=count, seed=seed,
+            max_concurrency=max_concurrency,
+        )
     )
 
 
@@ -178,6 +212,7 @@ async def _generate_with_distribution_sampling(
     seed: int | None,
     prefilled: list[dict[str, Any]] | None = None,
     relational_context: list[dict[str, Any]] | None = None,
+    max_concurrency: int | None = None,
 ) -> list[BaseModel]:
     """
     Generate data using numpy sampling for distribution fields and LLM for the rest.
@@ -199,6 +234,17 @@ async def _generate_with_distribution_sampling(
     is shown to the LLM as context so generated text is coherent with the
     related rows, but it is never stored as a field on the record itself.
     """
+    # Concurrency cap: explicit argument wins, else the env var, else the
+    # default. ``int()`` raises a clear ValueError if the env var isn't numeric.
+    if max_concurrency is None:
+        env_value = os.getenv("GENDANTIC_MAX_CONCURRENCY")
+        max_concurrency = (
+            int(env_value) if env_value else _DEFAULT_MAX_CONCURRENT_LLM_CALLS
+        )
+    if max_concurrency < 1:
+        raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}.")
+    resolved_concurrency = max_concurrency
+
     # 1. Extract distribution specs from Annotated types (with type info for proper casting)
     dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs_with_types(
         model_class
@@ -237,6 +283,7 @@ async def _generate_with_distribution_sampling(
             fields_to_generate,
             context,
             relational_context=batch_relational_context,
+            max_concurrency=resolved_concurrency,
         )
         return _merge_records(partial_records, llm_outputs)
 
@@ -307,6 +354,7 @@ async def _generate_remaining_fields(
     context: str,
     batch_size: int = 15,
     relational_context: list[dict[str, Any]] | None = None,
+    max_concurrency: int = _DEFAULT_MAX_CONCURRENT_LLM_CALLS,
 ) -> list[dict[str, Any]]:
     """
     Use LLM to generate the remaining fields not covered by distributions.
@@ -365,6 +413,12 @@ async def _generate_remaining_fields(
         for i in range(0, len(display_records), batch_size)
     ]
 
+    # Bound how many batch calls are in flight at once. The semaphore is created
+    # per request so it binds to the event loop actually driving this call (the
+    # sync wrappers reuse one loop, async callers bring their own), avoiding the
+    # cross-loop pitfalls of a module-level semaphore.
+    semaphore = asyncio.Semaphore(max_concurrency)
+
     async def generate_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prompt = load_prompt("partial_record_generation").format(
             count=len(batch),
@@ -376,14 +430,15 @@ async def _generate_remaining_fields(
             domain=domain,
             context=context,
         )
-        return await client.generate_structured(
-            schema=partial_schema,
-            prompt=prompt,
-            count=len(batch),
-        )
+        async with semaphore:
+            return await client.generate_structured(
+                schema=partial_schema,
+                prompt=prompt,
+                count=len(batch),
+            )
 
     try:
-        # Run all batches concurrently
+        # Run all batches concurrently, capped by the semaphore above.
         batch_results = await asyncio.gather(*[generate_batch(b) for b in batches])
         # Flatten results
         return [record for batch in batch_results for record in batch]

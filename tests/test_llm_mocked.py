@@ -7,7 +7,9 @@ requiring a live LiteLLM proxy. The single seam we mock is
 ``make_client`` / ``patch_clients`` fixtures in conftest.py.
 """
 
+import asyncio
 from typing import Annotated, Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel, Field
@@ -21,6 +23,8 @@ from gendantic import (
     generate_synthetic_data_sync,
 )
 
+from .conftest import ANALYSIS, is_analysis_call
+
 
 class Employee(BaseModel):
     """Employee with mixed distribution + LLM fields."""
@@ -29,6 +33,46 @@ class Employee(BaseModel):
     email: str
     age: Annotated[int, Uniform(min=22, max=65)]
     salary: Annotated[float, Normal(mean=75000, std=20000)]
+
+
+async def _run_and_measure_peak_concurrency(
+    patch_clients: Any, count: int, max_concurrency: int | None = None
+) -> int:
+    """Generate ``count`` LLM-only records and return the peak in-flight calls.
+
+    The mock client increments a counter while each field-generation call is
+    "in flight" (held open by a short sleep) so overlapping calls are
+    observable, and records the high-water mark.
+    """
+
+    class OnlyLLM(BaseModel):
+        name: str  # no distribution fields -> every batch is an LLM call
+
+    inflight = 0
+    peak = 0
+
+    async def gen(
+        schema: dict[str, Any], prompt: str, count: int = 1
+    ) -> list[dict[str, Any]]:
+        nonlocal inflight, peak
+        if is_analysis_call(schema):
+            return [ANALYSIS]
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0.01)  # hold the slot so overlap is observable
+        inflight -= 1
+        return [{"name": f"n{i}"} for i in range(count)]
+
+    client = AsyncMock()
+    client.generate_structured = AsyncMock(side_effect=gen)
+
+    with patch_clients(client):
+        rows = await generate_synthetic_data(
+            OnlyLLM, count=count, seed=1, max_concurrency=max_concurrency
+        )
+
+    assert len(rows) == count
+    return peak
 
 
 @pytest.mark.asyncio
@@ -79,6 +123,91 @@ async def test_seed_is_reproducible(make_client, patch_clients) -> None:
         b = await generate_synthetic_data(Employee, count=4, seed=7)
     assert [r.age for r in a] == [r.age for r in b]
     assert [r.salary for r in a] == [r.salary for r in b]
+
+
+@pytest.mark.asyncio
+async def test_llm_field_calls_are_concurrency_bounded(patch_clients) -> None:
+    """Many record batches don't all hit the LLM at once.
+
+    With a large ``count`` the pipeline produces more field-generation batches
+    than the default concurrency cap; the semaphore must keep the number of
+    simultaneously in-flight calls at or below that cap.
+    """
+    from gendantic.generator import _DEFAULT_MAX_CONCURRENT_LLM_CALLS
+
+    peak = await _run_and_measure_peak_concurrency(patch_clients, count=200)
+
+    assert peak > 1  # sanity: batches really do overlap
+    assert peak <= _DEFAULT_MAX_CONCURRENT_LLM_CALLS  # but never beyond the cap
+
+
+@pytest.mark.asyncio
+async def test_max_concurrency_argument_lowers_the_cap(patch_clients) -> None:
+    """An explicit ``max_concurrency`` overrides the default cap."""
+    peak = await _run_and_measure_peak_concurrency(
+        patch_clients, count=200, max_concurrency=3
+    )
+
+    assert peak > 1  # still runs concurrently
+    assert peak <= 3  # but honours the tighter, caller-supplied cap
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1])
+async def test_max_concurrency_must_be_positive(
+    make_client, patch_clients, bad: int
+) -> None:
+    """A non-positive ``max_concurrency`` is rejected before any LLM call."""
+
+    class OnlyLLM(BaseModel):
+        name: str
+
+    with patch_clients(make_client(lambda schema, prompt, count: [{"name": "n"}])):
+        with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+            await generate_synthetic_data(OnlyLLM, count=4, max_concurrency=bad)
+
+
+@pytest.mark.asyncio
+async def test_env_var_sets_the_default_cap(
+    patch_clients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GENDANTIC_MAX_CONCURRENCY caps concurrency when no argument is given."""
+    monkeypatch.setenv("GENDANTIC_MAX_CONCURRENCY", "2")
+
+    peak = await _run_and_measure_peak_concurrency(patch_clients, count=200)
+
+    assert peak > 1  # still concurrent
+    assert peak <= 2  # but bounded by the env var
+
+
+@pytest.mark.asyncio
+async def test_explicit_argument_overrides_env_var(
+    patch_clients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``max_concurrency`` takes precedence over the env var."""
+    monkeypatch.setenv("GENDANTIC_MAX_CONCURRENCY", "2")
+
+    peak = await _run_and_measure_peak_concurrency(
+        patch_clients, count=200, max_concurrency=5
+    )
+
+    assert peak > 2  # the env-var cap of 2 was overridden upward
+    assert peak <= 5  # by the explicit argument
+
+
+@pytest.mark.asyncio
+async def test_non_integer_env_var_raises(
+    make_client, patch_clients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-integer GENDANTIC_MAX_CONCURRENCY is rejected."""
+    monkeypatch.setenv("GENDANTIC_MAX_CONCURRENCY", "lots")
+
+    class OnlyLLM(BaseModel):
+        name: str
+
+    with patch_clients(make_client(lambda schema, prompt, count: [{"name": "n"}])):
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            await generate_synthetic_data(OnlyLLM, count=4)
 
 
 @pytest.mark.asyncio

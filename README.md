@@ -691,6 +691,7 @@ Gendantic uses [LiteLLM](https://docs.litellm.ai/) to connect to a LiteLLM proxy
 | `LITELLM_API_BASE` | Base URL for the LiteLLM proxy | (required) |
 | `LITELLM_MODEL` | Model identifier to use | `gpt-4o-mini` |
 | `LITELLM_API_KEY` | API key for proxy authentication | (empty) |
+| `GENDANTIC_MAX_CONCURRENCY` | Max concurrent LLM field-generation calls per request (overridden by the `max_concurrency` argument) | `8` |
 
 ### Using Different Models
 

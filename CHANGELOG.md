@@ -27,6 +27,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   batch. If records keep failing validation it raises a clear error. Relational
   generation raises on any validation failure (rows carry engine-assigned keys
   and cannot be dropped without breaking referential integrity).
+- LLM field-generation calls are now concurrency-bounded instead of firing
+  every record batch at once, so generating large batches no longer floods the
+  provider or triggers rate-limit rejections. The cap defaults to 8 and is
+  configurable per call via the `max_concurrency` argument on
+  `generate_synthetic_data` (and its batch/sync variants), or deployment-wide
+  via the `GENDANTIC_MAX_CONCURRENCY` environment variable.
 
 ### Fixed
 
