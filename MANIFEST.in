@@ -1,0 +1,5 @@
+# setuptools-scm includes every git-tracked file in the sdist; keep the
+# distribution to what a consumer needs (source, tests, examples, docs).
+prune notebooks
+prune .github
+exclude uv.lock .env.example .pre-commit-config.yaml .gitignore

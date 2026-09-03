@@ -24,14 +24,17 @@ Example:
     orders = dataset[Order]         # 500 rows, each customer_id in customers
 """
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import BaseModel
+
+from ._fields import iter_fields
 
 logger = logging.getLogger("gendantic")
 
@@ -218,26 +221,24 @@ class _ResolvedFK:
 def _iter_annotated_fields(
     model_class: type[BaseModel],
 ) -> Iterator[tuple[str, type, tuple[Any, ...]]]:
-    """Yield ``(field_name, base_type, markers)`` for each ``Annotated`` field.
+    """Yield ``(field_name, base_type, markers)`` for each field carrying markers.
 
-    ``base_type`` is the declared type (the first ``Annotated`` arg); ``markers``
-    are the remaining metadata args (distribution specs, ``PrimaryKey``,
-    ``ForeignKey``, ...). Non-``Annotated`` fields are skipped.
+    ``base_type`` is the declared type with any ``Optional`` stripped; ``markers``
+    are the ``Annotated`` extras (distribution specs, ``PrimaryKey``,
+    ``ForeignKey``, ...). Read via Pydantic's ``model_fields`` so inherited
+    fields and postponed (string) annotations are covered. Fields without
+    markers are skipped.
     """
-    for field_name, annotation in getattr(model_class, "__annotations__", {}).items():
-        if get_origin(annotation) is Annotated:
-            args = get_args(annotation)
-            yield field_name, args[0], args[1:]
+    for field_name, base_type, markers in iter_fields(model_class):
+        if markers:
+            yield field_name, base_type, markers
 
 
 def _field_base_type(model_class: type[BaseModel], name: str) -> type:
-    annotation = getattr(model_class, "__annotations__", {}).get(name)
-    if annotation is None:
-        return str
-    if get_origin(annotation) is Annotated:
-        base = get_args(annotation)[0]
-        return base if isinstance(base, type) else str
-    return annotation if isinstance(annotation, type) else str
+    for field_name, base_type, _markers in iter_fields(model_class):
+        if field_name == name:
+            return base_type if isinstance(base_type, type) else str
+    return str
 
 
 def _annotated_pks(model_class: type[BaseModel]) -> list[tuple[str, PrimaryKey, type]]:
@@ -258,7 +259,9 @@ def _primary_key_columns(model_class: type[BaseModel]) -> list[_PKColumn]:
     column names); otherwise every field carrying a ``PrimaryKey`` annotation
     forms the key, in declaration order.
     """
-    annotated = {field: (spec, base) for field, spec, base in _annotated_pks(model_class)}
+    annotated = {
+        field: (spec, base) for field, spec, base in _annotated_pks(model_class)
+    }
     declared = getattr(model_class, "__primary_key__", None)
     if declared is not None:
         names: tuple[str, ...] = (
@@ -355,7 +358,9 @@ def _resolve_foreign_keys(
     resolved: list[_ResolvedFK] = []
     for decl in _foreign_key_decls(model_class):
         label = "/".join(decl.columns)
-        target = _resolve_fk_model(decl.target_ref, model_class.__name__, label, by_name)
+        target = _resolve_fk_model(
+            decl.target_ref, model_class.__name__, label, by_name
+        )
         parent_pk = _primary_key_names(target)
         if not parent_pk:
             raise ValueError(
@@ -622,6 +627,7 @@ async def generate_dataset(
     *,
     seed: int | None = None,
     context: str = "general",
+    max_concurrency: int | None = None,
 ) -> Dataset:
     """Generate several related models together with referential integrity.
 
@@ -633,16 +639,27 @@ async def generate_dataset(
         counts: Mapping of model class to the number of rows to generate.
         seed: Optional seed for reproducible primary/foreign keys and sampling.
         context: Optional generation context passed to each model.
+        max_concurrency: Maximum number of LLM field-generation calls in flight
+            at once across the whole dataset (see
+            :func:`gendantic.generate_synthetic_data`). When ``None``, falls
+            back to the ``GENDANTIC_MAX_CONCURRENCY`` environment variable,
+            then to a default of 8.
 
     Returns:
         A :class:`Dataset` mapping each model class to its generated rows.
     """
     # Imported here to avoid a circular import at module load time.
-    from .generator import _generate_with_distribution_sampling
+    from .generator import (
+        _generate_with_distribution_sampling,
+        _resolve_max_concurrency,
+    )
 
     order = _resolve_generation_order(list(counts))
     by_name = {m.__name__: m for m in counts}
     key_rng = np.random.default_rng(seed)
+    # One budget for the whole dataset so the total in-flight LLM calls stays
+    # bounded regardless of how many models are generated.
+    semaphore = asyncio.Semaphore(_resolve_max_concurrency(max_concurrency))
 
     pk_pools: dict[type[BaseModel], list[tuple[Any, ...]]] = {}
     tables: dict[type[BaseModel], list[BaseModel]] = {}
@@ -671,6 +688,7 @@ async def generate_dataset(
             model_seed,
             prefilled=prefilled,
             relational_context=relational_context,
+            semaphore=semaphore,
         )
 
     return Dataset(tables)
@@ -681,8 +699,13 @@ def generate_dataset_sync(
     *,
     seed: int | None = None,
     context: str = "general",
+    max_concurrency: int | None = None,
 ) -> Dataset:
     """Synchronous wrapper around :func:`generate_dataset`."""
     from .generator import _run_coro
 
-    return _run_coro(generate_dataset(counts, seed=seed, context=context))
+    return _run_coro(
+        generate_dataset(
+            counts, seed=seed, context=context, max_concurrency=max_concurrency
+        )
+    )

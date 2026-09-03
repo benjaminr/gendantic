@@ -692,7 +692,7 @@ Gendantic uses [LiteLLM](https://docs.litellm.ai/) to connect to a LiteLLM proxy
 | `LITELLM_API_BASE` | Base URL for the LiteLLM proxy | (required) |
 | `LITELLM_MODEL` | Model identifier to use | `gpt-4o-mini` |
 | `LITELLM_API_KEY` | API key for proxy authentication | (empty) |
-| `GENDANTIC_MAX_CONCURRENCY` | Max concurrent LLM field-generation calls per request (overridden by the `max_concurrency` argument) | `8` |
+| `GENDANTIC_MAX_CONCURRENCY` | Max concurrent LLM field-generation calls per request or dataset (overridden by the `max_concurrency` argument) | `8` |
 
 ### Using Different Models
 
@@ -721,13 +721,14 @@ Generate synthetic data records for a Pydantic model.
 
 Generate multiple batches of synthetic data for different contexts concurrently. `max_concurrency` is a single budget shared across all contexts.
 
-### `generate_dataset(counts, *, seed, context)`
+### `generate_dataset(counts, *, seed, context, max_concurrency)`
 
 Generate several related models together with referential integrity.
 
 - `counts`: `dict[type[BaseModel], int]` mapping each model class to its row count
 - `seed`: Optional seed for reproducible keys and sampling
 - `context`: Optional generation context passed to each model
+- `max_concurrency`: Max concurrent LLM field-generation calls, shared across every model in the dataset (default: `GENDANTIC_MAX_CONCURRENCY`, else 8)
 
 Returns: `Dataset` — a mapping keyed by model class (`dataset[Model] -> list[Model]`), with a `.to_dataframes()` helper. A synchronous `generate_dataset_sync(...)` wrapper is also available.
 

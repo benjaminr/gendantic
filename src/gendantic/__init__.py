@@ -1,3 +1,6 @@
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
+
 from .distributions import (
     Beta,
     Binomial,
@@ -45,7 +48,13 @@ from .relational import (
 )
 from .sampler import DistributionSampler
 
+try:
+    __version__ = _package_version("gendantic")
+except PackageNotFoundError:  # pragma: no cover - running from an uninstalled tree
+    __version__ = "0.0.0"
+
 __all__ = [
+    "__version__",
     # Generation
     "generate_synthetic_data",
     "generate_synthetic_data_batch",

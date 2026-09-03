@@ -70,23 +70,33 @@ class LiteLLMClient:
             # Build a wrapper schema that ensures we get {"items": [...]}
             # The input schema is expected to be {"type": "array", "items": {...}}
             item_schema = _make_schema_strict(schema.get("items", schema))
+            # Show the LLM the item schema with its definitions still attached.
+            prompt_schema = json.dumps(item_schema)
+
+            # ``$ref`` pointers (``#/$defs/Name``) resolve against the root of
+            # the schema document, which is the wrapper below, not the item
+            # schema, so hoist any definitions up to that root.
+            defs = item_schema.pop("$defs", None)
+            root_schema: dict[str, Any] = {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": item_schema,
+                    }
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            }
+            if defs:
+                root_schema["$defs"] = defs
 
             wrapped_schema = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "structured_response",
                     "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "items": {
-                                "type": "array",
-                                "items": item_schema,
-                            }
-                        },
-                        "required": ["items"],
-                        "additionalProperties": False,
-                    },
+                    "schema": root_schema,
                 },
             }
 
@@ -99,7 +109,7 @@ class LiteLLMClient:
                     {
                         "role": "system",
                         "content": load_prompt("llm_system").format(
-                            count=count, schema=json.dumps(item_schema)
+                            count=count, schema=prompt_schema
                         ),
                     },
                     {"role": "user", "content": prompt},

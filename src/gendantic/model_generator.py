@@ -12,8 +12,10 @@ import ast
 from typing import Any
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from .distributions import Conditional, DistributionSpec
 from .llm import get_client
 from .prompts import load_prompt
 
@@ -98,7 +100,6 @@ async def extend_model_with_correlations(
         # ExtendedEmployee now has __correlations__ with suggested
         # correlations between age, experience, and salary
     """
-    from .distributions import DistributionSpec
     from .llm_driven_analyser import LLMDrivenModelAnalyser
 
     # Extract distribution specs from the model. Conditional fields are sampled
@@ -205,33 +206,50 @@ def _get_basic_model_source_repr(model_class: type[BaseModel]) -> str:
 
     # Add field annotations
     for field_name, field_info in model_class.model_fields.items():
-        annotation = model_class.__annotations__.get(field_name, "Any")
-        type_str = _type_to_string(annotation)
-
-        # Pydantic v2 stores constraints in metadata as Ge(ge=0), Le(le=100), etc.
-        constraints = []
-        constraint_map = {"ge": "Ge", "le": "Le", "gt": "Gt", "lt": "Lt"}
-        for constraint_name, class_name in constraint_map.items():
-            for meta in field_info.metadata:
-                if type(meta).__name__ == class_name:
-                    value = getattr(meta, constraint_name, None)
-                    if value is not None:
-                        constraints.append(f"{constraint_name}={value}")
-                    break
-
-        if constraints:
-            lines.append(
-                f"    {field_name}: {type_str} = Field({', '.join(constraints)})"
-            )
-        elif (
-            field_info.default is not PydanticUndefined
-            and field_info.default is not ...
-        ):
-            lines.append(f"    {field_name}: {type_str} = {field_info.default!r}")
-        else:
-            lines.append(f"    {field_name}: {type_str}")
+        # ``model_fields`` covers inherited fields and already-evaluated
+        # (non-string) annotations; ``annotation`` is the type minus Annotated.
+        type_str = _type_to_string(field_info.annotation)
+        lines.append(_field_line(field_name, type_str, field_info))
 
     return "\n".join(lines)
+
+
+def _field_constraint_args(field_info: FieldInfo) -> list[str]:
+    """Render ``Field(ge=..., le=..., gt=..., lt=...)`` arguments for a field.
+
+    Pydantic v2 stores these constraints on ``field_info.metadata`` as
+    ``annotated_types`` objects (``Ge(ge=0)``, ``Le(le=100)``, ...).
+    """
+    constraints: list[str] = []
+    constraint_map = {"ge": "Ge", "le": "Le", "gt": "Gt", "lt": "Lt"}
+    for constraint_name, class_name in constraint_map.items():
+        for meta in field_info.metadata:
+            if type(meta).__name__ == class_name:
+                value = getattr(meta, constraint_name, None)
+                if value is not None:
+                    constraints.append(f"{constraint_name}={value}")
+                break
+    return constraints
+
+
+def _field_line(field_name: str, annotation_str: str, field_info: FieldInfo) -> str:
+    """Render one ``name: annotation [= default | = Field(...)]`` class-body line.
+
+    Numeric ``Field`` bounds are kept so the regenerated model enforces (and
+    the sampler truncates to) the same range as the original.
+    """
+    constraints = _field_constraint_args(field_info)
+    has_default = (
+        field_info.default is not PydanticUndefined and field_info.default is not ...
+    )
+    if constraints:
+        args = list(constraints)
+        if has_default:
+            args.insert(0, f"default={field_info.default!r}")
+        return f"    {field_name}: {annotation_str} = Field({', '.join(args)})"
+    if has_default:
+        return f"    {field_name}: {annotation_str} = {field_info.default!r}"
+    return f"    {field_name}: {annotation_str}"
 
 
 async def _get_distribution_code_from_llm(
@@ -276,16 +294,23 @@ def _get_model_source_repr(
     if model_class.__doc__:
         lines.append(f'    """{model_class.__doc__}"""')
 
-    # Add field annotations
+    # Add field annotations. Only gendantic distribution markers are rendered
+    # back into ``Annotated[...]``: Pydantic's own constraint objects are
+    # re-emitted as ``Field(...)`` arguments, and relational key markers are
+    # left out (their class references are not executable in the sandbox).
     for field_name, field_info in model_class.model_fields.items():
-        annotation = model_class.__annotations__.get(field_name, "Any")
-        annotation_str = _annotation_to_string(annotation)
-
-        # Check for actual default value (not PydanticUndefined which means required)
-        if field_info.default is not PydanticUndefined:
-            lines.append(f"    {field_name}: {annotation_str} = {field_info.default!r}")
+        type_str = _type_to_string(field_info.annotation)
+        markers = [
+            m
+            for m in field_info.metadata
+            if isinstance(m, (DistributionSpec, Conditional))
+        ]
+        if markers:
+            metadata_strs = ", ".join(repr(m) for m in markers)
+            annotation_str = f"Annotated[{type_str}, {metadata_strs}]"
         else:
-            lines.append(f"    {field_name}: {annotation_str}")
+            annotation_str = type_str
+        lines.append(_field_line(field_name, annotation_str, field_info))
 
     return "\n".join(lines)
 
@@ -546,6 +571,11 @@ ALLOWED_CALL_NAMES = {
     # Correlations
     "Correlations",
     "CopulaType",
+    # Conditional distributions and cross-field constraints
+    "Conditional",
+    "Range",
+    "Constraints",
+    "Ordering",
     # Builtins for validators
     "ValueError",
     "len",
@@ -674,12 +704,16 @@ def _execute_model_code(code: str) -> type:
         Beta,
         Binomial,
         Categorical,
+        Conditional,
+        Constraints,
         CopulaType,
         Correlations,
         Exponential,
         LogNormal,
         Normal,
+        Ordering,
         Poisson,
+        Range,
         Uniform,
     )
 
@@ -740,6 +774,11 @@ def _execute_model_code(code: str) -> type:
         # Correlations
         "Correlations": Correlations,
         "CopulaType": CopulaType,
+        # Conditional distributions and cross-field constraints
+        "Conditional": Conditional,
+        "Range": Range,
+        "Constraints": Constraints,
+        "Ordering": Ordering,
     }
 
     try:

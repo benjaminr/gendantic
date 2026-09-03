@@ -210,7 +210,10 @@ def generate_synthetic_data_sync(
     """
     return _run_coro(
         generate_synthetic_data(
-            model_class, count, context=context, seed=seed,
+            model_class,
+            count,
+            context=context,
+            seed=seed,
             max_concurrency=max_concurrency,
         )
     )
@@ -227,7 +230,10 @@ def generate_synthetic_data_batch_sync(
     """Synchronous wrapper around :func:`generate_synthetic_data_batch`."""
     return _run_coro(
         generate_synthetic_data_batch(
-            model_class, contexts, count=count, seed=seed,
+            model_class,
+            contexts,
+            count=count,
+            seed=seed,
             max_concurrency=max_concurrency,
         )
     )
@@ -263,6 +269,9 @@ async def _generate_with_distribution_sampling(
     is shown to the LLM as context so generated text is coherent with the
     related rows, but it is never stored as a field on the record itself.
     """
+    if count < 0:
+        raise ValueError(f"count must be >= 0, got {count}.")
+
     # Concurrency cap. A caller (e.g. the batch path) may pass a pre-built
     # semaphore to share one budget across requests; otherwise build one from
     # the resolved cap (explicit argument, else env var, else default).
@@ -406,17 +415,20 @@ async def _generate_remaining_fields(
 
     # Build a schema for just the fields we need
     full_schema = model_class.model_json_schema()
-    partial_schema = {
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {
-                field: full_schema.get("properties", {}).get(field, {"type": "string"})
-                for field in fields_to_generate
-            },
-            "required": list(fields_to_generate),
+    item_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            field: full_schema.get("properties", {}).get(field, {"type": "string"})
+            for field in fields_to_generate
         },
+        "required": list(fields_to_generate),
     }
+    # Enum and nested-model fields are emitted as ``{"$ref": "#/$defs/..."}``;
+    # carry the definitions along so those references still resolve once the
+    # schema is handed to the provider.
+    if "$defs" in full_schema:
+        item_schema["$defs"] = full_schema["$defs"]
+    partial_schema = {"type": "array", "items": item_schema}
 
     client = get_client()
 

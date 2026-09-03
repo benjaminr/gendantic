@@ -37,6 +37,7 @@ from pydantic import BaseModel
 from scipy import stats
 
 from .distributions import (
+    Categorical,
     Conditional,
     CopulaType,
     Correlations,
@@ -118,8 +119,7 @@ class FidelityReport:
                 detail = f"{f.test}={f.statistic:.4f} p={f.p_value:.4f}"
                 if f.observed_mean is not None and f.expected_mean is not None:
                     detail += (
-                        f" mean obs={f.observed_mean:.4g}"
-                        f"/exp={f.expected_mean:.4g}"
+                        f" mean obs={f.observed_mean:.4g}/exp={f.expected_mean:.4g}"
                     )
                 label = f.field if f.group is None else f"{f.field} | {f.group}"
                 lines.append(f"  [{mark}] {label} ({f.distribution}): {detail}")
@@ -392,11 +392,30 @@ def _categorical_chi2_field(
     column: list[Any],
     alpha: float,
 ) -> FieldFidelity:
-    weights: dict[str, float] = spec.weights  # type: ignore[attr-defined]
+    assert isinstance(spec, Categorical)  # noqa: S101 - routed here by type
     n = len(column)
-    categories = list(weights.keys())
+    categories = list(spec.weights.keys())
     obs_counts = np.array([column.count(c) for c in categories], dtype=float)
-    exp_counts = np.array([weights[c] * n for c in categories], dtype=float)
+
+    # A value outside the declared categories has probability zero under the
+    # spec, so the fit is rejected outright. (Reporting it this way, rather
+    # than passing mismatched totals to scipy, keeps the "never raises"
+    # contract of fidelity_report.)
+    if obs_counts.sum() < n:
+        return FieldFidelity(
+            field=field_name,
+            distribution=spec.distribution_type,
+            test="chi2",
+            statistic=float("inf"),
+            p_value=0.0,
+            passed=False,
+            observed_mean=None,
+        )
+
+    # Use the same renormalised probabilities the sampler draws from, so that
+    # weights summing to only ~1.0 (within Categorical's tolerance) still give
+    # expected counts that total exactly n, as scipy's chi-square requires.
+    exp_counts = spec._normalised_probabilities() * n
 
     obs_m, exp_m = _merge_small_bins(obs_counts, exp_counts)
     return _chi2_result(field_name, spec, obs_m, exp_m, alpha, observed_mean=None)
