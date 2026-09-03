@@ -450,7 +450,8 @@ async def _get_model_code_from_llm(
         raise ValueError(f"Failed to generate model code: {e}") from e
 
 
-# Allowed AST node types for safe code
+# Allowed AST node types for safe code. Any node whose type is not in this set
+# is rejected by ``_validate_node`` before the code is executed.
 ALLOWED_NODE_TYPES = {
     # Module structure
     ast.Module,
@@ -465,33 +466,44 @@ ALLOWED_NODE_TYPES = {
     ast.Constant,
     ast.Attribute,
     ast.Subscript,
-    ast.Index,  # Python 3.8 compatibility
     ast.Slice,
     ast.BinOp,
     ast.UnaryOp,
     ast.Compare,
     ast.BoolOp,
+    ast.IfExp,  # ternary: `a if cond else b`
+    ast.JoinedStr,  # f-strings (e.g. in validator error messages)
+    ast.FormattedValue,
     # Operators
     ast.Add,
     ast.Sub,
     ast.Mult,
     ast.Div,
+    ast.Mod,
+    ast.Pow,
+    ast.FloorDiv,
     ast.Eq,
     ast.NotEq,
     ast.Lt,
     ast.LtE,
     ast.Gt,
     ast.GtE,
+    ast.In,
+    ast.NotIn,
+    ast.Is,
+    ast.IsNot,
     ast.Or,
     ast.And,
     ast.Not,
     ast.USub,
+    ast.BitOr,  # union type hints, e.g. `int | None`
     # Containers
     ast.List,
     ast.Tuple,
     ast.Dict,
     ast.Set,
-    # Annotations
+    # Assignment / annotations
+    ast.Assign,  # e.g. `__correlations__ = Correlations(...)`
     ast.AnnAssign,
     ast.arg,
     ast.arguments,
@@ -503,8 +515,6 @@ ALLOWED_NODE_TYPES = {
     ast.If,
     ast.Pass,
     ast.Raise,
-    # Decorators
-    ast.Decorator if hasattr(ast, "Decorator") else type(None),
     # Other
     ast.alias,
     ast.withitem,
@@ -622,6 +632,12 @@ def _validate_node(node: ast.AST) -> None:
     if isinstance(node, ast.Call):
         _validate_call(node)
 
+    # Enforce the allowlist: reject any node type not explicitly permitted.
+    if type(node) not in ALLOWED_NODE_TYPES:
+        raise CodeValidationError(
+            f"Disallowed syntax '{type(node).__name__}' in generated code"
+        )
+
 
 def _validate_call(node: ast.Call) -> None:
     """Validate a function call node."""
@@ -630,6 +646,10 @@ def _validate_call(node: ast.Call) -> None:
         func_name = node.func.id
         if func_name in FORBIDDEN_NAMES:
             raise CodeValidationError(f"Forbidden function call '{func_name}'")
+        if func_name not in ALLOWED_CALL_NAMES:
+            raise CodeValidationError(
+                f"Call to '{func_name}' not allowed in generated code"
+            )
     elif isinstance(node.func, ast.Attribute):
         # Method calls like self.something() - allow for validators
         attr_name = node.func.attr

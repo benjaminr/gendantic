@@ -266,21 +266,6 @@ def _primary_key_names(model_class: type[BaseModel]) -> list[str]:
     return [c.field for c in _primary_key_columns(model_class)]
 
 
-def extract_primary_key(
-    model_class: type[BaseModel],
-) -> tuple[str, PrimaryKey, type] | None:
-    """Return ``(field_name, PrimaryKey, base_type)`` for the model's PK, if any.
-
-    For composite primary keys this returns the first key column; use
-    :func:`_primary_key_columns` for the full key.
-    """
-    cols = _primary_key_columns(model_class)
-    if not cols:
-        return None
-    first = cols[0]
-    return first.field, first.spec, first.base_type
-
-
 def extract_foreign_keys(model_class: type[BaseModel]) -> dict[str, ForeignKey]:
     """Return a mapping of ``field_name -> ForeignKey`` for per-field annotations."""
     foreign_keys: dict[str, ForeignKey] = {}

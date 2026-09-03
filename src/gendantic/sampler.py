@@ -38,7 +38,6 @@ class DistributionSampler:
 
     def __init__(self, seed: int | None = None):
         self.rng = np.random.default_rng(seed)
-        self.seed = seed
 
     def sample_fields(
         self,
