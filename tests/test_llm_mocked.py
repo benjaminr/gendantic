@@ -35,6 +35,46 @@ class Employee(BaseModel):
     salary: Annotated[float, Normal(mean=75000, std=20000)]
 
 
+async def _run_and_measure_peak_concurrency(
+    patch_clients: Any, count: int, max_concurrency: int | None = None
+) -> int:
+    """Generate ``count`` LLM-only records and return the peak in-flight calls.
+
+    The mock client increments a counter while each field-generation call is
+    "in flight" (held open by a short sleep) so overlapping calls are
+    observable, and records the high-water mark.
+    """
+
+    class OnlyLLM(BaseModel):
+        name: str  # no distribution fields -> every batch is an LLM call
+
+    inflight = 0
+    peak = 0
+
+    async def gen(
+        schema: dict[str, Any], prompt: str, count: int = 1
+    ) -> list[dict[str, Any]]:
+        nonlocal inflight, peak
+        if is_analysis_call(schema):
+            return [ANALYSIS]
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0.01)  # hold the slot so overlap is observable
+        inflight -= 1
+        return [{"name": f"n{i}"} for i in range(count)]
+
+    client = AsyncMock()
+    client.generate_structured = AsyncMock(side_effect=gen)
+
+    with patch_clients(client):
+        rows = await generate_synthetic_data(
+            OnlyLLM, count=count, seed=1, max_concurrency=max_concurrency
+        )
+
+    assert len(rows) == count
+    return peak
+
+
 @pytest.mark.asyncio
 async def test_pipeline_merges_sampled_and_generated(make_client, patch_clients) -> None:
     """Distribution fields come from numpy; other fields from the LLM; merged."""
@@ -90,59 +130,151 @@ async def test_llm_field_calls_are_concurrency_bounded(patch_clients) -> None:
     """Many record batches don't all hit the LLM at once.
 
     With a large ``count`` the pipeline produces more field-generation batches
-    than :data:`_MAX_CONCURRENT_LLM_CALLS`; the semaphore must keep the number
-    of simultaneously in-flight calls at or below that cap.
+    than the default concurrency cap; the semaphore must keep the number of
+    simultaneously in-flight calls at or below that cap.
     """
-    from gendantic.generator import _MAX_CONCURRENT_LLM_CALLS
+    from gendantic.generator import _DEFAULT_MAX_CONCURRENT_LLM_CALLS
 
-    class OnlyLLM(BaseModel):
-        name: str  # no distribution fields -> every batch is an LLM call
+    peak = await _run_and_measure_peak_concurrency(patch_clients, count=200)
 
-    inflight = 0
-    peak = 0
-
-    async def gen(
-        schema: dict[str, Any], prompt: str, count: int = 1
-    ) -> list[dict[str, Any]]:
-        nonlocal inflight, peak
-        if is_analysis_call(schema):
-            return [ANALYSIS]
-        inflight += 1
-        peak = max(peak, inflight)
-        await asyncio.sleep(0.01)  # hold the slot so overlap is observable
-        inflight -= 1
-        return [{"name": f"n{i}"} for i in range(count)]
-
-    client = AsyncMock()
-    client.generate_structured = AsyncMock(side_effect=gen)
-
-    # count=200 with the default batch size of 15 yields ~14 batches, well above
-    # the concurrency cap of 8.
-    with patch_clients(client):
-        rows = await generate_synthetic_data(OnlyLLM, count=200, seed=1)
-
-    assert len(rows) == 200
     assert peak > 1  # sanity: batches really do overlap
-    assert peak <= _MAX_CONCURRENT_LLM_CALLS  # but never beyond the cap
+    assert peak <= _DEFAULT_MAX_CONCURRENT_LLM_CALLS  # but never beyond the cap
 
 
 @pytest.mark.asyncio
-async def test_invalid_records_are_dropped_not_raised(make_client, patch_clients) -> None:
-    """Records failing validation are skipped with a warning, not fatal."""
+async def test_max_concurrency_argument_lowers_the_cap(patch_clients) -> None:
+    """An explicit ``max_concurrency`` overrides the default cap."""
+    peak = await _run_and_measure_peak_concurrency(
+        patch_clients, count=200, max_concurrency=3
+    )
+
+    assert peak > 1  # still runs concurrently
+    assert peak <= 3  # but honours the tighter, caller-supplied cap
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1])
+async def test_max_concurrency_must_be_positive(
+    make_client, patch_clients, bad: int
+) -> None:
+    """A non-positive ``max_concurrency`` is rejected before any LLM call."""
+
+    class OnlyLLM(BaseModel):
+        name: str
+
+    with patch_clients(make_client(lambda schema, prompt, count: [{"name": "n"}])):
+        with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+            await generate_synthetic_data(OnlyLLM, count=4, max_concurrency=bad)
+
+
+@pytest.mark.asyncio
+async def test_env_var_sets_the_default_cap(
+    patch_clients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GENDANTIC_MAX_CONCURRENCY caps concurrency when no argument is given."""
+    monkeypatch.setenv("GENDANTIC_MAX_CONCURRENCY", "2")
+
+    peak = await _run_and_measure_peak_concurrency(patch_clients, count=200)
+
+    assert peak > 1  # still concurrent
+    assert peak <= 2  # but bounded by the env var
+
+
+@pytest.mark.asyncio
+async def test_explicit_argument_overrides_env_var(
+    patch_clients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``max_concurrency`` takes precedence over the env var."""
+    monkeypatch.setenv("GENDANTIC_MAX_CONCURRENCY", "2")
+
+    peak = await _run_and_measure_peak_concurrency(
+        patch_clients, count=200, max_concurrency=5
+    )
+
+    assert peak > 2  # the env-var cap of 2 was overridden upward
+    assert peak <= 5  # by the explicit argument
+
+
+@pytest.mark.asyncio
+async def test_non_integer_env_var_raises(
+    make_client, patch_clients, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-integer GENDANTIC_MAX_CONCURRENCY is rejected."""
+    monkeypatch.setenv("GENDANTIC_MAX_CONCURRENCY", "lots")
+
+    class OnlyLLM(BaseModel):
+        name: str
+
+    with patch_clients(make_client(lambda schema, prompt, count: [{"name": "n"}])):
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            await generate_synthetic_data(OnlyLLM, count=4)
+
+
+@pytest.mark.asyncio
+async def test_invalid_records_are_topped_up_to_reach_count(
+    make_client, patch_clients
+) -> None:
+    """A transient invalid record is regenerated so the full count is returned."""
 
     class Bounded(BaseModel):
         label: str = Field(min_length=3)
         age: Annotated[int, Uniform(min=22, max=65)]
 
-    # Return one too-short label (invalid) among valid ones.
+    # First-ever record is too short (invalid); every record after that is
+    # valid. A single top-up round should recover the shortfall.
+    calls = {"n": 0}
+
     def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
-        return [{"label": "x" if i == 0 else f"label{i}"} for i in range(count)]
+        out = []
+        for i in range(count):
+            first_ever = calls["n"] == 0 and i == 0
+            out.append({"label": "x" if first_ever else f"label{calls['n']}_{i}"})
+        calls["n"] += 1
+        return out
 
     with patch_clients(make_client(values)):
         rows = await generate_synthetic_data(Bounded, count=4, seed=3)
 
-    assert len(rows) == 3  # one dropped
+    assert len(rows) == 4  # shortfall regenerated, not dropped
     assert all(len(r.label) >= 3 for r in rows)
+    assert calls["n"] == 2  # one initial round + one top-up round
+
+
+@pytest.mark.asyncio
+async def test_persistent_validation_failure_raises(make_client, patch_clients) -> None:
+    """When every record fails validation, generation raises rather than lying."""
+
+    class Bounded(BaseModel):
+        label: str = Field(min_length=3)
+        age: Annotated[int, Uniform(min=22, max=65)]
+
+    # Always return too-short labels: no top-up round can succeed.
+    def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        return [{"label": "x"} for _ in range(count)]
+
+    with patch_clients(make_client(values)):
+        with pytest.raises(ValueError, match="No valid .* records could be generated"):
+            await generate_synthetic_data(Bounded, count=4, seed=3)
+
+
+@pytest.mark.asyncio
+async def test_partial_progress_then_exhaustion_raises(
+    make_client, patch_clients
+) -> None:
+    """If retries make partial progress but can't reach count, it raises."""
+
+    class Bounded(BaseModel):
+        label: str = Field(min_length=3)
+        age: Annotated[int, Uniform(min=22, max=65)]
+
+    # The first record of every batch is invalid: round 1 (count=4) yields 3
+    # valid, the size-1 top-up round then yields 0 and stops.
+    def values(schema: dict[str, Any], prompt: str, count: int) -> list[dict]:
+        return [{"label": "x" if i == 0 else f"label{i}"} for i in range(count)]
+
+    with patch_clients(make_client(values)):
+        with pytest.raises(ValueError, match="Could only generate 3 of 4"):
+            await generate_synthetic_data(Bounded, count=4, seed=3)
 
 
 @pytest.mark.asyncio

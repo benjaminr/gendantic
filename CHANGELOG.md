@@ -21,9 +21,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is truncation-aware and compares against the truncated distribution.
 - Correlation fidelity now uses the rank statistic the copula family targets:
   Kendall's τ for Archimedean families, Spearman's ρ otherwise.
-- LLM field-generation calls are now concurrency-bounded (at most 8 in flight
-  per request) instead of firing every record batch at once, so generating
-  large batches no longer floods the provider or triggers rate-limit rejections.
+- Generation now returns **exactly** the requested count: records that fail
+  Pydantic validation are regenerated (bounded top-up rounds) instead of being
+  silently dropped, so `generate_synthetic_data` no longer returns a short
+  batch. If records keep failing validation it raises a clear error. Relational
+  generation raises on any validation failure (rows carry engine-assigned keys
+  and cannot be dropped without breaking referential integrity).
+- LLM field-generation calls are now concurrency-bounded instead of firing
+  every record batch at once, so generating large batches no longer floods the
+  provider or triggers rate-limit rejections. The cap defaults to 8 and is
+  configurable per call via the `max_concurrency` argument on
+  `generate_synthetic_data` (and its batch/sync variants), or deployment-wide
+  via the `GENDANTIC_MAX_CONCURRENCY` environment variable.
 
 ### Fixed
 
