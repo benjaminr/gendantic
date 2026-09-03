@@ -139,25 +139,21 @@ class LLMDrivenModelAnalyser:
         schema = model_class.model_json_schema()
         fields = model_class.model_fields
 
-        # Get model-level information
+        # Only the data actually rendered into the analysis prompt is collected
+        # here (see _build_analysis_prompt): the JSON schema plus, per field, its
+        # type info, constraints, description, schema fragment and validators.
         model_info: dict[str, Any] = {
-            "model_name": model_class.__name__,
-            "model_docstring": model_class.__doc__,
-            "model_config": getattr(model_class, "model_config", {}),
             "schema": schema,
             "fields": {},
         }
 
-        # Extract field information without interpretation
         for field_name, field_info in fields.items():
             field_data = {
-                "name": field_name,
                 "type_info": cls._extract_field_type_info(
                     field_name, model_class, field_info
                 ),
                 "constraints": cls._extract_field_constraints_raw(field_info),
-                "validation": cls._extract_validation_info_raw(field_info),
-                "metadata": cls._extract_field_metadata_raw(field_info),
+                "description": getattr(field_info, "description", None),
                 "schema_info": schema.get("properties", {}).get(field_name, {}),
                 "field_validators": cls._extract_field_specific_validators(
                     field_name, model_class
@@ -182,7 +178,6 @@ class LLMDrivenModelAnalyser:
 
         return {
             "annotation": str(annotation) if annotation else None,
-            "python_type": type(annotation).__name__ if annotation else None,
             "is_required": field_info.is_required(),
             "default": field_info.default if field_info.default is not ... else None,
         }
@@ -207,30 +202,6 @@ class LLMDrivenModelAnalyser:
                     constraints[attr] = value
 
         return constraints
-
-    @classmethod
-    def _extract_validation_info_raw(cls, field_info: FieldInfo) -> dict[str, Any]:
-        """Extract raw validation information."""
-        return {
-            "required": field_info.is_required(),
-            "alias": getattr(field_info, "alias", None),
-            "description": getattr(field_info, "description", None),
-            "deprecated": getattr(field_info, "deprecated", None),
-            "frozen": getattr(field_info, "frozen", None),
-        }
-
-    @classmethod
-    def _extract_field_metadata_raw(cls, field_info: FieldInfo) -> dict[str, Any]:
-        """Extract raw field metadata."""
-        metadata: dict[str, Any] = {}
-
-        if hasattr(field_info, "json_schema_extra"):
-            metadata["json_schema_extra"] = field_info.json_schema_extra
-
-        if hasattr(field_info, "examples"):
-            metadata["examples"] = field_info.examples
-
-        return metadata
 
     @classmethod
     def _extract_field_specific_validators(
@@ -393,7 +364,7 @@ class LLMDrivenModelAnalyser:
   - Required: {field_data["type_info"]["is_required"]}
   - Default: {field_data["type_info"]["default"]}
   - Constraints: {json.dumps(field_data["constraints"], indent=2) if field_data["constraints"] else "None"}
-  - Description: {field_data["validation"].get("description", "None")}
+  - Description: {field_data["description"]}
   - Field Validators: {json.dumps(field_data["field_validators"], indent=2) if field_data["field_validators"] else "None"}
   - Schema: {json.dumps(field_data["schema_info"], indent=2) if field_data["schema_info"] else "None"}"""
             fields_info.append(field_desc)
