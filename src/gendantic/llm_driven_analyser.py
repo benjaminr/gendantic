@@ -211,40 +211,44 @@ class LLMDrivenModelAnalyser:
 
         field_validators = []
 
-        # Look for field validators that mention this field
-        for attr_name in dir(model_class):
-            attr = getattr(model_class, attr_name)
-            if hasattr(attr, "__pydantic_validator__"):
-                validator_info = getattr(attr, "__pydantic_validator__", {})
-                validator_fields = validator_info.get("fields", [])
-
-                if field_name in validator_fields:
-                    field_validators.append(
-                        {
-                            "validator_name": attr_name,
-                            "description": getattr(attr, "__doc__", ""),
-                            "mode": validator_info.get("mode", None),
-                        }
-                    )
+        # Look for field validators that mention this field. Pydantic v2 records
+        # them on __pydantic_decorators__, not as attributes on the class.
+        for name, decorator in model_class.__pydantic_decorators__.field_validators.items():
+            if field_name in decorator.info.fields:
+                field_validators.append(
+                    {
+                        "validator_name": name,
+                        "description": decorator.func.__doc__ or "",
+                        "mode": decorator.info.mode,
+                    }
+                )
 
         return field_validators
 
     @classmethod
     def _extract_validators_info(cls, model_class: type[BaseModel]) -> dict[str, Any]:
-        """Extract validator information including docstrings."""
-        validators = {}
+        """Extract validator information including docstrings.
 
-        # Get field validators with more details
-        for attr_name in dir(model_class):
-            attr = getattr(model_class, attr_name)
-            if hasattr(attr, "__pydantic_validator__"):
-                validator_info = getattr(attr, "__pydantic_validator__", {})
-                validators[attr_name] = {
-                    "type": "field_validator",
-                    "fields": validator_info.get("fields", []),
-                    "mode": validator_info.get("mode", None),
-                    "description": getattr(attr, "__doc__", None),
-                }
+        Pydantic v2 stores validator metadata on ``__pydantic_decorators__``
+        rather than as attributes discoverable via ``dir()``.
+        """
+        decorators = model_class.__pydantic_decorators__
+        validators: dict[str, Any] = {}
+
+        for name, field_validator in decorators.field_validators.items():
+            validators[name] = {
+                "type": "field_validator",
+                "fields": list(field_validator.info.fields),
+                "mode": field_validator.info.mode,
+                "description": field_validator.func.__doc__,
+            }
+
+        for name, model_validator in decorators.model_validators.items():
+            validators[name] = {
+                "type": "model_validator",
+                "mode": model_validator.info.mode,
+                "description": model_validator.func.__doc__,
+            }
 
         return validators
 
