@@ -244,7 +244,6 @@ class LLMDrivenModelAnalyser:
                     "fields": validator_info.get("fields", []),
                     "mode": validator_info.get("mode", None),
                     "description": getattr(attr, "__doc__", None),
-                    "source_code": f"Method: {attr_name}",
                 }
 
         return validators
