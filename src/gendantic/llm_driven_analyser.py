@@ -182,25 +182,37 @@ class LLMDrivenModelAnalyser:
             "default": field_info.default if field_info.default is not ... else None,
         }
 
+    # Constraint attributes carried on Pydantic v2 field metadata objects
+    # (annotated_types.Ge/Le/Gt/Lt/MinLen/MaxLen/MultipleOf and the general
+    # metadata that holds ``pattern``). Each object exposes the constraint under
+    # the matching attribute name.
+    _CONSTRAINT_ATTRS = (
+        "gt",
+        "ge",
+        "lt",
+        "le",
+        "multiple_of",
+        "min_length",
+        "max_length",
+        "pattern",
+    )
+
     @classmethod
     def _extract_field_constraints_raw(cls, field_info: FieldInfo) -> dict[str, Any]:
-        """Extract raw Pydantic constraints without interpretation."""
-        constraints = {}
+        """Extract Pydantic v2 field constraints from ``field_info.metadata``.
 
-        # Numeric constraints
-        for attr in ["gt", "ge", "lt", "le", "multiple_of"]:
-            if hasattr(field_info, attr):
-                value = getattr(field_info, attr)
+        In Pydantic v2, ``Field(ge=..., max_length=..., pattern=...)``
+        constraints are stored as metadata objects (``annotated_types.Ge``,
+        ``MaxLen``, ...), not as attributes on ``FieldInfo``. Returns a flat
+        ``{constraint: value}`` dict (e.g. ``{"ge": 0, "le": 120}``); empty when
+        the field is unconstrained.
+        """
+        constraints: dict[str, Any] = {}
+        for meta in field_info.metadata:
+            for attr in cls._CONSTRAINT_ATTRS:
+                value = getattr(meta, attr, None)
                 if value is not None:
                     constraints[attr] = value
-
-        # String constraints
-        for attr in ["min_length", "max_length", "pattern"]:
-            if hasattr(field_info, attr):
-                value = getattr(field_info, attr)
-                if value is not None:
-                    constraints[attr] = value
-
         return constraints
 
     @classmethod
