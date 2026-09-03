@@ -8,17 +8,20 @@ asserts the report flags the specific field or correlation.
 
 from typing import Annotated
 
+import pytest
 from pydantic import BaseModel
 
 from gendantic import (
     Beta,
     Binomial,
     Categorical,
+    Conditional,
     Correlations,
     DistributionSampler,
     LLMDrivenModelAnalyser,
     Normal,
     Poisson,
+    Range,
     Uniform,
     fidelity_report,
 )
@@ -182,3 +185,87 @@ def test_summary_is_printable_and_marks_status() -> None:
     assert "PASS" in text
     assert "salary" in text
     assert "age~salary" in text
+
+
+# --------------------------------------------------------------------------
+# Conditional fields - checked per case branch
+# --------------------------------------------------------------------------
+
+
+class Conditioned(BaseModel):
+    department: Annotated[str, Categorical(weights={"Eng": 0.5, "Sales": 0.3, "HR": 0.2})]
+    salary: Annotated[
+        float,
+        Conditional(
+            on="department",
+            cases={"Eng": Normal(90000, 5000), "Sales": Normal(70000, 5000)},
+            default=Normal(50000, 5000),
+        ),
+    ]
+    age: Annotated[int, Uniform(min=20, max=60)]
+    bonus: Annotated[
+        float,
+        Conditional(
+            on="age",
+            cases={Range(max=40): Normal(2000, 200), Range(min=40): Normal(8000, 200)},
+            default=Normal(0, 1),
+        ),
+    ]
+
+
+def test_conditional_field_checked_per_group_passes() -> None:
+    records = _generate(Conditioned, 4000, seed=42)
+    # alpha=0.01: with 7 goodness-of-fit checks a 0.05 threshold produces the
+    # occasional false positive on correct data; the routing/means asserted
+    # below are what this test verifies.
+    report = fidelity_report(records, Conditioned, alpha=0.01)
+
+    assert report.passed, report.summary()
+    # salary yields one result per branch (Eng / Sales / default=HR).
+    salary_groups = {f.group for f in report.fields if f.field == "salary"}
+    assert salary_groups == {
+        "department='Eng'",
+        "department='Sales'",
+        "department=default",
+    }
+    # Each group's expected mean reflects its own case spec.
+    by_group = {f.group: f for f in report.fields if f.field == "salary"}
+    assert by_group["department='Eng'"].expected_mean == pytest.approx(90000, abs=500)
+    assert by_group["department='Sales'"].expected_mean == pytest.approx(70000, abs=500)
+    assert by_group["department=default"].expected_mean == pytest.approx(50000, abs=500)
+
+
+def test_conditional_numeric_bins_labelled_by_range() -> None:
+    records = _generate(Conditioned, 3000, seed=7)
+    report = fidelity_report(records, Conditioned)
+
+    bonus_groups = {f.group for f in report.fields if f.field == "bonus"}
+    assert bonus_groups == {"age=<40", "age=>=40"}
+
+
+def test_conditional_group_flags_wrong_data() -> None:
+    records = _generate(Conditioned, 2000, seed=1)
+    # Corrupt only the Eng salaries; other branches stay spec-compliant.
+    for r in records:
+        if r["department"] == "Eng":
+            r["salary"] = 10000.0
+
+    report = fidelity_report(records, Conditioned)
+    eng = next(
+        f for f in report.fields if f.field == "salary" and f.group == "department='Eng'"
+    )
+    sales = next(
+        f
+        for f in report.fields
+        if f.field == "salary" and f.group == "department='Sales'"
+    )
+
+    assert not eng.passed
+    assert sales.passed  # untouched branch still passes
+    assert not report.passed
+
+
+def test_conditional_group_appears_in_summary() -> None:
+    records = _generate(Conditioned, 1000, seed=3)
+    text = fidelity_report(records, Conditioned).summary()
+    assert "salary | department='Eng'" in text

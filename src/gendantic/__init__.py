@@ -2,13 +2,17 @@ from .distributions import (
     Beta,
     Binomial,
     Categorical,
+    Conditional,
+    Constraints,
     CopulaType,
     Correlations,
     DistributionSpec,
     Exponential,
     LogNormal,
     Normal,
+    Ordering,
     Poisson,
+    Range,
     Uniform,
 )
 from .export import to_dataframe
@@ -77,6 +81,11 @@ __all__ = [
     # Correlations and Copulas
     "Correlations",
     "CopulaType",
+    # Conditional distributions and cross-field constraints
+    "Conditional",
+    "Range",
+    "Constraints",
+    "Ordering",
     # Utilities
     "DistributionSampler",
     "LLMDrivenModelAnalyser",

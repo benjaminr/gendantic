@@ -6,7 +6,7 @@ from typing import Any, List, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .distributions import Correlations
+from .distributions import Constraints, Correlations
 from .llm import get_client
 from .llm_driven_analyser import LLMDrivenModelAnalyser
 from .prompts import load_prompt
@@ -198,13 +198,14 @@ async def _generate_with_distribution_sampling(
         model_class
     )
 
-    # 2. Extract correlations from model (if defined)
+    # 2. Extract correlations and cross-field constraints from model (if defined)
     correlations = _extract_correlations(model_class)
+    constraints = _extract_constraints(model_class)
 
     # 3. Sample distribution fields with numpy (using correlations if present)
     sampler = DistributionSampler(seed=seed)
     partial_records = sampler.sample_fields(
-        dist_specs, count, correlations=correlations
+        dist_specs, count, correlations=correlations, constraints=constraints
     )
 
     # 3a. Merge in any engine-prefilled fields (primary/foreign keys)
@@ -448,4 +449,20 @@ def _extract_correlations(model_class: type[BaseModel]) -> Correlations | None:
         specs = [(k[0], k[1], v) for k, v in correlations.items()]
         return Correlations(*specs)
 
+    return None
+
+
+def _extract_constraints(model_class: type[BaseModel]) -> Constraints | None:
+    """
+    Extract cross-field constraints from a model class.
+
+    Looks for a ``__constraints__`` class attribute that should be a
+    ``Constraints`` instance (e.g. containing ``Ordering(...)`` constraints).
+
+    Returns:
+        Constraints instance if found, None otherwise.
+    """
+    constraints = getattr(model_class, "__constraints__", None)
+    if isinstance(constraints, Constraints):
+        return constraints
     return None

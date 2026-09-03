@@ -16,6 +16,10 @@ Tests used per field:
       count histogram (small-expectation bins are merged).
     - categorical: chi-square goodness-of-fit on category frequencies.
 
+Conditional fields are checked *per group*: records are split by which case
+matched (on the discriminator value stored in the record) and each group is run
+against its own case spec, so a conditional field yields one result per branch.
+
 Correlations are checked with Spearman's rank correlation (what copulas
 actually control) as the verdict, with Pearson reported alongside.
 """
@@ -29,7 +33,7 @@ from numpy.typing import NDArray
 from pydantic import BaseModel
 from scipy import stats
 
-from .distributions import Correlations, DistributionSpec
+from .distributions import Conditional, Correlations, DistributionSpec, Range
 from .llm_driven_analyser import LLMDrivenModelAnalyser
 
 _CONTINUOUS = {"normal", "uniform", "lognormal", "exponential", "beta"}
@@ -48,6 +52,9 @@ class FieldFidelity:
     passed: bool
     observed_mean: float | None = None
     expected_mean: float | None = None
+    # For conditional fields: which case branch this result covers (e.g.
+    # ``department='Eng'`` or ``age=[30,50)``). None for plain fields.
+    group: str | None = None
 
 
 @dataclass
@@ -96,7 +103,8 @@ class FidelityReport:
                         f" mean obs={f.observed_mean:.4g}"
                         f"/exp={f.expected_mean:.4g}"
                     )
-                lines.append(f"  [{mark}] {f.field} ({f.distribution}): {detail}")
+                label = f.field if f.group is None else f"{f.field} | {f.group}"
+                lines.append(f"  [{mark}] {label} ({f.distribution}): {detail}")
 
         if self.correlations:
             lines.append("")
@@ -128,6 +136,10 @@ def fidelity_report(
     checked; free-text (LLM-generated) fields are ignored, as there is no
     specification to compare them against.
 
+    Conditional fields are checked per case branch: records are grouped by which
+    case matched (on the discriminator value stored in the record) and each
+    group is tested against its own case spec, producing one result per branch.
+
     Args:
         records: Generated model instances or plain dicts.
         model_class: The model the records were generated for.
@@ -140,7 +152,15 @@ def fidelity_report(
     Returns:
         A :class:`FidelityReport`. Never raises on statistical failure.
     """
-    specs = LLMDrivenModelAnalyser.extract_distribution_specs(model_class)
+    all_specs = LLMDrivenModelAnalyser.extract_distribution_specs(model_class)
+    specs = {
+        name: spec
+        for name, spec in all_specs.items()
+        if isinstance(spec, DistributionSpec)
+    }
+    conditionals = {
+        name: spec for name, spec in all_specs.items() if isinstance(spec, Conditional)
+    }
     rows = [_as_dict(r) for r in records]
     report = FidelityReport(sample_size=len(rows))
 
@@ -152,6 +172,11 @@ def fidelity_report(
             continue
         column = [row[field_name] for row in rows]
         report.fields.append(_check_field(field_name, spec, column, alpha))
+
+    for field_name, cond in conditionals.items():
+        if field_name not in rows[0] or cond.on not in rows[0]:
+            continue
+        report.fields.extend(_check_conditional_field(field_name, cond, rows, alpha))
 
     correlations = getattr(model_class, "__correlations__", None)
     if isinstance(correlations, Correlations):
@@ -185,6 +210,56 @@ def _check_field(
         return _discrete_chi2_field(field_name, spec, column, alpha)
     # categorical (and any future nominal type)
     return _categorical_chi2_field(field_name, spec, column, alpha)
+
+
+def _format_case_label(key: Any) -> str:
+    """Human-readable label for a conditional case key."""
+    if isinstance(key, Range):
+        if key.min is None:
+            return f"<{key.max:g}"
+        if key.max is None:
+            return f">={key.min:g}"
+        return f"[{key.min:g},{key.max:g})"
+    return repr(key)
+
+
+def _check_conditional_field(
+    field_name: str,
+    cond: Conditional,
+    rows: list[dict[str, Any]],
+    alpha: float,
+) -> list[FieldFidelity]:
+    """Goodness-of-fit per case branch of a conditional field.
+
+    Records are grouped by the spec their (already-converted) discriminator
+    value maps to - mirroring how the sampler assigned them - and each group is
+    tested against that spec. Groups are labelled by the case key(s) that route
+    to them (or ``default``), and results are returned in a stable label order.
+    """
+    # Map each spec object to the label(s) of the case(s) routing to it.
+    labels: dict[int, list[str]] = {}
+    for key, spec in cond.cases.items():
+        labels.setdefault(id(spec), []).append(_format_case_label(key))
+    labels.setdefault(id(cond.default), []).append("default")
+
+    # Group the field's values by the matched spec.
+    grouped: dict[int, list[Any]] = {}
+    group_spec: dict[int, DistributionSpec] = {}
+    for row in rows:
+        spec = cond.spec_for(row[cond.on])
+        key = id(spec)
+        grouped.setdefault(key, []).append(row[field_name])
+        group_spec[key] = spec
+
+    results: list[FieldFidelity] = []
+    for key, values in grouped.items():
+        group = f"{cond.on}={'|'.join(sorted(labels.get(key, ['?'])))}"
+        result = _check_field(field_name, group_spec[key], values, alpha)
+        result.group = group
+        results.append(result)
+
+    results.sort(key=lambda r: r.group or "")
+    return results
 
 
 def _expected_mean(spec: DistributionSpec, n: int = 2000) -> float:

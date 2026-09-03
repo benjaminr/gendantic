@@ -1,6 +1,6 @@
 """Edge-case routing in correlated copula sampling.
 
-Covers the branches in ``DistributionSampler._sample_correlated`` /
+Covers the branches in ``DistributionSampler._columns_correlated`` /
 ``_sample_archimedean_copula`` that decide *how* fields get sampled: excluding
 distributions that cannot be correlated, falling back to a Gaussian base for
 mixed copula specs, treating zero correlation as independence, and rejecting

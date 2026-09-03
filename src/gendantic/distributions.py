@@ -555,3 +555,216 @@ class Correlations:
                 lines.append(f'    ("{f1}", "{f2}", {corr}, "{copula}"),')
         lines.append(")")
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Range:
+    """
+    A half-open numeric interval ``[min, max)`` used as a ``Conditional`` case key.
+
+    Either bound may be ``None`` to leave that side unbounded. A value ``v``
+    matches when ``(min is None or v >= min) and (max is None or v < max)`` -
+    so adjacent ranges like ``Range(max=30)``, ``Range(30, 50)``,
+    ``Range(min=50)`` tile the number line without overlap or gaps.
+
+    Args:
+        min: Inclusive lower bound, or ``None`` for unbounded below.
+        max: Exclusive upper bound, or ``None`` for unbounded above.
+
+    Example:
+        Range(30, 50)     # 30 <= v < 50
+        Range(max=30)     # v < 30
+        Range(min=50)     # v >= 50
+    """
+
+    min: float | None = None
+    max: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.min is None and self.max is None:
+            raise ValueError("Range must set at least one of min or max")
+        if self.min is not None and self.max is not None and self.min >= self.max:
+            raise ValueError(
+                f"Range min ({self.min}) must be strictly less than max ({self.max})"
+            )
+
+    def contains(self, value: float) -> bool:
+        """Whether ``value`` falls in this half-open interval."""
+        if self.min is not None and value < self.min:
+            return False
+        if self.max is not None and value >= self.max:
+            return False
+        return True
+
+
+# Keys of a Conditional's ``cases`` mapping: an exact discriminator value
+# (str/int/bool/...) for equality matching, or a Range for numeric binning.
+ConditionalKey = Any
+
+
+@dataclass(frozen=True)
+class Conditional:
+    """
+    A distribution whose parameters depend on another field's value.
+
+    Placed in an ``Annotated`` type like any distribution spec, but instead of
+    sampling from a single marginal it selects a distribution per record based
+    on the already-sampled value of the ``on`` field.
+
+    The ``cases`` mapping matches either exact discriminator values (for a
+    categorical ``on`` field) or :class:`Range` intervals (for a numeric ``on``
+    field); the two key styles cannot be mixed in one ``Conditional``. Any value
+    matching no case falls back to ``default``.
+
+    The ``on`` field must itself be a distribution-sampled field (a plain spec
+    or another ``Conditional``); it cannot depend on an LLM-generated field,
+    which is not known at sampling time. A ``Conditional`` field is sampled
+    per-group and does not participate in copula correlations.
+
+    Args:
+        on: Name of the discriminator field this distribution depends on.
+        cases: Mapping of discriminator value (or ``Range``) to distribution.
+        default: Distribution used when no case matches. Required.
+
+    Example:
+        salary: Annotated[float, Conditional(
+            on="department",
+            cases={
+                "Engineering": Normal(90000, 15000),
+                "Sales": Normal(70000, 20000),
+            },
+            default=Normal(50000, 10000),
+        )]
+    """
+
+    on: str
+    cases: dict[ConditionalKey, DistributionSpec]
+    default: DistributionSpec
+
+    def __post_init__(self) -> None:
+        if not self.on or not isinstance(self.on, str):
+            raise ValueError("Conditional 'on' must be a non-empty field name")
+        if not self.cases:
+            raise ValueError("Conditional requires at least one case")
+        if not isinstance(self.default, DistributionSpec):
+            raise ValueError("Conditional 'default' must be a DistributionSpec")
+        for key, spec in self.cases.items():
+            if not isinstance(spec, DistributionSpec):
+                raise ValueError(
+                    f"Conditional case for {key!r} must map to a DistributionSpec, "
+                    f"got {type(spec).__name__}"
+                )
+        range_keys = [isinstance(k, Range) for k in self.cases]
+        if any(range_keys) and not all(range_keys):
+            raise ValueError(
+                "Conditional cannot mix exact-value keys and Range keys; "
+                "use one style consistently"
+            )
+
+    def spec_for(self, value: Any) -> DistributionSpec:
+        """Return the distribution to sample for a given discriminator value."""
+        for key, spec in self.cases.items():
+            if isinstance(key, Range):
+                if key.contains(value):
+                    return spec
+            elif key == value:
+                return spec
+        return self.default
+
+
+class Ordering:
+    """
+    An ascending ordering constraint across two or more numeric fields.
+
+    Declares that, within every generated record, the listed fields are in
+    non-decreasing order: ``fields[0] <= fields[1] <= ...``. Enforced after
+    sampling by sorting each record's values across these fields.
+
+    Note:
+        Because enforcement sorts the sampled values, the constrained fields end
+        up sharing the pooled distribution's order statistics - their individual
+        marginals shift. This is the intended behaviour when the fields share a
+        domain (e.g. two timestamps) and is not appropriate for fields with very
+        different marginals.
+
+    Args:
+        *fields: Two or more field names, in the required ascending order.
+
+    Example:
+        __constraints__ = Constraints(Ordering("start", "end"))
+    """
+
+    def __init__(self, *fields: str) -> None:
+        if len(fields) < 2:
+            raise ValueError("Ordering requires at least two field names")
+        for f in fields:
+            if not isinstance(f, str):
+                raise ValueError(f"Ordering field names must be strings, got {f!r}")
+        if len(set(fields)) != len(fields):
+            raise ValueError(f"Ordering field names must be unique, got {fields}")
+        self.fields: tuple[str, ...] = fields
+
+    def __repr__(self) -> str:
+        return f"Ordering({', '.join(repr(f) for f in self.fields)})"
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Ordering) and other.fields == self.fields
+
+    def __hash__(self) -> int:
+        return hash(("Ordering", self.fields))
+
+
+class Constraints:
+    """
+    A collection of cross-field constraints declared on a model.
+
+    Attach to a model as ``__constraints__``, parallel to ``__correlations__``.
+    Currently supports :class:`Ordering` constraints.
+
+    Args:
+        *constraints: One or more constraint objects (e.g. ``Ordering(...)``).
+
+    Example:
+        class Booking(BaseModel):
+            start: Annotated[float, Uniform(0, 100)]
+            end: Annotated[float, Uniform(0, 100)]
+            __constraints__ = Constraints(Ordering("start", "end"))
+    """
+
+    def __init__(self, *constraints: Ordering) -> None:
+        for c in constraints:
+            if not isinstance(c, Ordering):
+                raise ValueError(
+                    f"Unsupported constraint {c!r}; expected an Ordering instance"
+                )
+        self._constraints: list[Ordering] = list(constraints)
+
+    def __iter__(self) -> Iterator[Ordering]:
+        return iter(self._constraints)
+
+    def __len__(self) -> int:
+        return len(self._constraints)
+
+    def orderings(self) -> list[Ordering]:
+        """Return the declared ordering constraints."""
+        return [c for c in self._constraints if isinstance(c, Ordering)]
+
+    def fields(self) -> set[str]:
+        """All field names referenced by any constraint."""
+        names: set[str] = set()
+        for c in self._constraints:
+            names.update(c.fields)
+        return names
+
+    def __repr__(self) -> str:
+        return f"Constraints({', '.join(repr(c) for c in self._constraints)})"
+
+    def to_code(self) -> str:
+        """Generate a Python code representation for this Constraints instance."""
+        if not self._constraints:
+            return "Constraints()"
+        lines = ["Constraints("]
+        for c in self._constraints:
+            lines.append(f"    {c!r},")
+        lines.append(")")
+        return "\n".join(lines)

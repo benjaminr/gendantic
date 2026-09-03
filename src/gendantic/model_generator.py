@@ -98,10 +98,18 @@ async def extend_model_with_correlations(
         # ExtendedEmployee now has __correlations__ with suggested
         # correlations between age, experience, and salary
     """
+    from .distributions import DistributionSpec
     from .llm_driven_analyser import LLMDrivenModelAnalyser
 
-    # Extract distribution specs from the model
-    dist_specs = LLMDrivenModelAnalyser.extract_distribution_specs(model_class)
+    # Extract distribution specs from the model. Conditional fields are sampled
+    # per-group and cannot participate in copula correlations, so exclude them.
+    dist_specs = {
+        name: spec
+        for name, spec in LLMDrivenModelAnalyser.extract_distribution_specs(
+            model_class
+        ).items()
+        if isinstance(spec, DistributionSpec)
+    }
 
     if not dist_specs:
         raise ValueError(

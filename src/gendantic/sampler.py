@@ -14,7 +14,13 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import integrate, optimize, stats
 
-from .distributions import CopulaType, Correlations, DistributionSpec
+from .distributions import (
+    Conditional,
+    Constraints,
+    CopulaType,
+    Correlations,
+    DistributionSpec,
+)
 
 logger = logging.getLogger("gendantic")
 
@@ -43,11 +49,12 @@ class DistributionSampler:
     def sample_fields(
         self,
         distribution_specs: (
-            dict[str, DistributionSpec]
-            | dict[str, tuple[DistributionSpec, type, dict[str, float | None]]]
+            dict[str, DistributionSpec | Conditional]
+            | dict[str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]]
         ),
         count: int,
         correlations: Correlations | None = None,
+        constraints: Constraints | None = None,
     ) -> list[dict[str, Any]]:
         """
         Sample all distribution fields and return as list of partial records.
@@ -55,20 +62,27 @@ class DistributionSampler:
         If correlations are specified, uses appropriate copulas to preserve
         marginal distributions while enforcing the correlation/dependency structure.
 
+        ``Conditional`` specs select a distribution per record based on the
+        already-sampled value of their ``on`` field; they are resolved after the
+        plain (and correlated) fields, in dependency order. ``constraints``
+        (e.g. ``Ordering``) are enforced on the assembled columns afterwards.
+
         Args:
-            distribution_specs: Either a plain ``{field: DistributionSpec}`` map
-                (types default to float, no constraints) or the fully-specified
-                ``{field: (DistributionSpec, target_type, constraints)}`` form
-                produced by ``extract_distribution_specs_with_types``.
+            distribution_specs: Either a plain ``{field: spec}`` map (types
+                default to float, no constraints) or the fully-specified
+                ``{field: (spec, target_type, constraints)}`` form produced by
+                ``extract_distribution_specs_with_types``. A spec may be a
+                ``DistributionSpec`` or a ``Conditional``.
             count: Number of records to sample
             correlations: Optional correlation structure
+            constraints: Optional cross-field constraints (e.g. ``Ordering``)
         """
         if not distribution_specs:
             return [{} for _ in range(count)]
 
         # Normalise to (spec, type, constraints) format
         normalised_specs: dict[
-            str, tuple[DistributionSpec, type, dict[str, float | None]]
+            str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
         ] = {}
 
         for field_name, spec_or_tuple in distribution_specs.items():
@@ -86,50 +100,176 @@ class DistributionSampler:
                     {"ge": None, "le": None, "gt": None, "lt": None},
                 )
 
+        # Split conditional fields out; plain fields are sampled first so their
+        # values are available as discriminators.
+        plain_specs: dict[
+            str, tuple[DistributionSpec, type, dict[str, float | None]]
+        ] = {}
+        conditional_specs: dict[str, Conditional] = {}
+        for name, (spec, target_type, field_constraints) in normalised_specs.items():
+            if isinstance(spec, Conditional):
+                conditional_specs[name] = spec
+            else:
+                plain_specs[name] = (spec, target_type, field_constraints)
+
         if correlations is None or len(correlations) == 0:
-            return self._sample_independent(normalised_specs, count)
+            samples = self._columns_independent(plain_specs, count)
+        else:
+            conflict = correlations.get_fields() & set(conditional_specs)
+            if conflict:
+                logger.warning(
+                    "Correlation spec references conditional field(s) %s; conditional "
+                    "fields are sampled per-group and are not correlated.",
+                    ", ".join(sorted(conflict)),
+                )
+            samples = self._columns_correlated(plain_specs, count, correlations)
 
-        return self._sample_correlated(normalised_specs, count, correlations)
+        if conditional_specs:
+            self._resolve_conditionals(
+                conditional_specs, normalised_specs, samples, count
+            )
 
-    def _sample_independent(
+        if constraints is not None:
+            self._apply_constraints(constraints, samples)
+
+        return [
+            {
+                name: self._convert_numpy_value(
+                    samples[name][i], target_type, field_constraints
+                )
+                for name, (_, target_type, field_constraints) in normalised_specs.items()
+            }
+            for i in range(count)
+        ]
+
+    def _columns_independent(
         self,
         distribution_specs: dict[
             str, tuple[DistributionSpec, type, dict[str, float | None]]
         ],
         count: int,
-    ) -> list[dict[str, Any]]:
-        """Sample fields independently (no correlation structure)."""
-        samples: dict[str, NDArray[Any]] = {}
-        target_types: dict[str, type] = {}
-        constraints_map: dict[str, dict[str, float | None]] = {}
+    ) -> dict[str, NDArray[Any]]:
+        """Sample fields independently (no correlation structure), as columns.
 
-        for field_name, (spec, target_type, constraints) in distribution_specs.items():
-            samples[field_name] = spec.sample(count, self.rng)
-            target_types[field_name] = target_type
-            constraints_map[field_name] = constraints
+        Iterating in insertion order keeps the RNG draw sequence deterministic.
+        """
+        return {
+            field_name: spec.sample(count, self.rng)
+            for field_name, (spec, _, _) in distribution_specs.items()
+        }
 
-        return [
-            {
-                field_name: self._convert_numpy_value(
-                    samples[field_name][i],
-                    target_types[field_name],
-                    constraints_map[field_name],
+    def _resolve_conditionals(
+        self,
+        conditional_specs: dict[str, Conditional],
+        normalised_specs: dict[
+            str, tuple[DistributionSpec | Conditional, type, dict[str, float | None]]
+        ],
+        samples: dict[str, NDArray[Any]],
+        count: int,
+    ) -> None:
+        """Sample conditional fields into ``samples``, in dependency order.
+
+        A conditional field's ``on`` discriminator must be another
+        distribution-sampled field (a plain field already in ``samples`` or
+        another conditional). Conditionals are resolved once their discriminator
+        is available; a remaining set that can make no progress is a cycle.
+
+        The discriminator is matched on its *converted* value (the value that
+        will appear in the record), so numeric bins line up with what the user
+        sees after int rounding / constraint clipping.
+        """
+        known = set(samples.keys())
+        all_fields = known | set(conditional_specs)
+
+        for name, cond in conditional_specs.items():
+            if cond.on == name:
+                raise ValueError(f"Conditional field {name!r} cannot depend on itself")
+            if cond.on not in all_fields:
+                raise ValueError(
+                    f"Conditional field {name!r} depends on {cond.on!r}, which is not "
+                    f"a distribution-sampled field; conditional discriminators must "
+                    f"themselves be sampled fields."
                 )
-                for field_name in samples
-            }
-            for i in range(count)
-        ]
 
-    def _sample_correlated(
+        remaining = dict(conditional_specs)
+        while remaining:
+            ready = [name for name, cond in remaining.items() if cond.on in known]
+            if not ready:
+                cycle = ", ".join(sorted(remaining))
+                raise ValueError(
+                    f"Circular dependency among conditional fields: {cycle}"
+                )
+            for name in ready:
+                cond = remaining.pop(name)
+                _, disc_type, disc_constraints = normalised_specs[cond.on]
+                discriminator = [
+                    self._convert_numpy_value(
+                        samples[cond.on][i], disc_type, disc_constraints
+                    )
+                    for i in range(count)
+                ]
+                samples[name] = self._sample_conditional_column(
+                    cond, discriminator, count
+                )
+                known.add(name)
+
+    def _sample_conditional_column(
+        self, cond: Conditional, discriminator: list[Any], count: int
+    ) -> NDArray[Any]:
+        """Sample a conditional field by grouping records that share a spec.
+
+        Each record picks a distribution via ``cond.spec_for`` based on its
+        (converted) discriminator value; records mapping to the same spec are
+        sampled together as one vectorized batch, then scattered back to their
+        positions. Group order follows first appearance, keeping the RNG
+        sequence deterministic.
+        """
+        result: NDArray[Any] = np.empty(count, dtype=object)
+        group_indices: dict[int, list[int]] = {}
+        group_specs: dict[int, DistributionSpec] = {}
+        for i in range(count):
+            spec = cond.spec_for(discriminator[i])
+            group_indices.setdefault(id(spec), []).append(i)
+            group_specs[id(spec)] = spec
+
+        for spec_id, indices in group_indices.items():
+            idx = np.asarray(indices)
+            result[idx] = group_specs[spec_id].sample(len(indices), self.rng)
+        return result
+
+    def _apply_constraints(
+        self, constraints: Constraints, samples: dict[str, NDArray[Any]]
+    ) -> None:
+        """Enforce cross-field constraints on the sampled columns in place.
+
+        ``Ordering`` is enforced by sorting each record's values across the
+        constrained fields ascending, so ``fields[0] <= fields[1] <= ...`` holds
+        for every record.
+        """
+        for ordering in constraints.orderings():
+            missing = [f for f in ordering.fields if f not in samples]
+            if missing:
+                raise ValueError(
+                    f"Ordering references field(s) not sampled via distributions: "
+                    f"{', '.join(missing)}"
+                )
+            stacked = np.array(
+                [np.asarray(samples[f], dtype=float) for f in ordering.fields]
+            )
+            ordered = np.sort(stacked, axis=0)
+            for position, field_name in enumerate(ordering.fields):
+                samples[field_name] = ordered[position]
+
+    def _columns_correlated(
         self,
         distribution_specs: dict[
             str, tuple[DistributionSpec, type, dict[str, float | None]]
         ],
         count: int,
         correlations: Correlations,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, NDArray[Any]]:
         """
-        Sample fields with correlation structure using copulas.
+        Sample fields with correlation structure using copulas, as columns.
 
         Fields whose distribution does not support correlation (e.g.
         Categorical) are sampled independently; only correlation-capable
@@ -140,12 +280,6 @@ class DistributionSampler:
         for the whole correlation structure; when specs mix copula types,
         Gaussian is used as the base.
         """
-        target_types: dict[str, type] = {
-            name: t for name, (_, t, _) in distribution_specs.items()
-        }
-        constraints_map: dict[str, dict[str, float | None]] = {
-            name: c for name, (_, _, c) in distribution_specs.items()
-        }
         samples: dict[str, NDArray[Any]] = {}
 
         # Partition fields into correlation-capable and independent
@@ -205,17 +339,7 @@ class DistributionSampler:
                     u_col = np.clip(u_samples[:, i], 1e-10, 1 - 1e-10)
                     samples[name] = distribution_specs[name][0].quantile(u_col)
 
-        return [
-            {
-                name: self._convert_numpy_value(
-                    samples[name][i],
-                    target_types[name],
-                    constraints_map[name],
-                )
-                for name in distribution_specs
-            }
-            for i in range(count)
-        ]
+        return samples
 
     def _sample_marginals(
         self,
