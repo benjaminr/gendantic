@@ -343,7 +343,9 @@ Numeric bins are matched on the *converted* value the record exposes (after int 
 
 ### Cross-field ordering constraints
 
-Declare an `Ordering` inside a `__constraints__` attribute to guarantee two or more fields always come out sorted ascending per record (ties allowed). This is enforced by sorting each row's values after sampling, so the marginals are preserved while the ordering invariant always holds.
+Declare an `Ordering` inside a `__constraints__` attribute to guarantee two or more fields always come out sorted ascending per record (ties allowed). This is enforced by sorting each row's values across the constrained fields after sampling.
+
+Because the sort reassigns which field receives which value, the *combined* pool of values is preserved but each constrained field's individual marginal shifts to an order statistic — the first field becomes the row-wise minimum, the last the row-wise maximum. This is the deliberate trade-off for a hard ordering guarantee: use it when the invariant matters more than the exact per-field marginals (e.g. `start <= end` dates).
 
 ```python
 from gendantic import Constraints, Ordering, Uniform
@@ -574,6 +576,7 @@ patterns:
 | Example | LLM? | Shows |
 |---------|------|-------|
 | [`llm_single_model.py`](examples/llm_single_model.py) | yes | Single model: a minimal text-only case, plus distributions correlated with a copula |
+| [`conditional.py`](examples/conditional.py) | no | Conditional distributions (categorical & numeric `Range` bins), chained dependencies, and cross-field `Ordering` constraints |
 | [`relational_quickstart.py`](examples/relational_quickstart.py) | no | Basic three-table relational generation with referential integrity |
 | [`relational_hierarchy.py`](examples/relational_hierarchy.py) | no | Self-references (string forward ref), nullable foreign keys, `to_dataframes()` |
 | [`relational_llm.py`](examples/relational_llm.py) | yes | Relational generation where the LLM writes semantic fields coherent with related rows |
@@ -791,6 +794,7 @@ The `notebooks/` directory contains interactive tutorials:
 5. **05_model_extension.ipynb** - Extending models with distributions and correlations
 6. **06_relational.ipynb** - Multi-model datasets with primary/foreign keys and referential integrity
 7. **07_fidelity.ipynb** - Statistically validating generated data against its spec with `fidelity_report()`
+8. **08_conditional.ipynb** - Conditional distributions (`Conditional`, `Range`) and cross-field ordering constraints (`Constraints`, `Ordering`)
 
 Install notebook dependencies:
 ```bash
